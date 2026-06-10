@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    linear-gradient(rgba(163, 255, 36, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(163, 255, 36, 0.04) 1px, transparent 1px),
+    #060807;
+  background-size: 24px 24px;
+  color: #f7fff2;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Dark-theme scrollbar for the sticky left sidebar (and any other
+ * scrollable area that opts in via .aside-scroll).  Keeps the
+ * scrollbar from clashing with the neon court-line palette and
+ * reserves enough gutter that the last item can still scroll
+ * above the bottom edge. */
+.aside-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(163, 255, 36, 0.45) rgba(255, 255, 255, 0.05);
+}
+
+.aside-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.aside-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 999px;
+}
+
+.aside-scroll::-webkit-scrollbar-thumb {
+  background: rgba(163, 255, 36, 0.45);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.aside-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(163, 255, 36, 0.7);
+  background-clip: padding-box;
+}

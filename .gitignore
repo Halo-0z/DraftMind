@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# Local runtime
+.env
+.codex-logs/
+*.log
+backend/draftmind.db
+
+# Package manager caches
+.npm-cache/
