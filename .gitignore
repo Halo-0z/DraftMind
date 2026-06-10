@@ -1,19 +1,48 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
 *.egg-info/
+.venv/
+venv/
 
 # Node / Next.js
 node_modules/
 .next/
 out/
 
-# Local runtime
+# Environment files
 .env
+.env.*
+!.env.example
+frontend/.env.local
+
+# Local runtime / generated files
 .codex-logs/
 *.log
+*.out
+*_LOG
+*_out.txt
+*_err.txt
+_pytest_out.txt
+_import_check.txt
+
+# Backend runtime files
 backend/draftmind.db
+backend/*.out
+backend/*_out.txt
+backend/*_err.txt
+backend/out.txt
+backend_LOG
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
 
 # Package manager caches
 .npm-cache/
+
+# Processed data
+data/processed/*
+!data/processed/.gitkeep
