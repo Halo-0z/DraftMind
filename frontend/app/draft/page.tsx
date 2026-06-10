@@ -4,11 +4,14 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   AgentAskResponse,
   askAgent,
+  getProspects,
   getRecommendation,
   getTeamPicks,
   getTeamRoster,
   getTeams,
+  LockedPick,
   NewsArticle,
+  Prospect,
   Recommendation,
   refreshNews,
   RosterPlayer,
@@ -16,9 +19,49 @@ import {
   searchNews,
   simulateDraft,
   Simulation,
+  SimulatedPick,
   Team,
   TeamPick,
 } from "@/lib/api";
+
+// Phase 3: locked pick marker — kept in one place so future backend
+// wording tweaks need only this constant to be updated.
+const LOCKED_PICK_LOG_MARKER = "This pick was locked by user override.";
+
+function isPickLocked(pick: SimulatedPick): boolean {
+  return pick.decision_log.some((line) => line.includes(LOCKED_PICK_LOG_MARKER));
+}
+
+// Phase 3: backend error format can be a string, an array of objects
+// (FastAPI validation errors), a {detail: {...}} object, or just plain
+// text.  We surface a single human-readable line for the user.
+function formatApiError(err: unknown, fallback: string): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && "detail" in parsed) {
+      const detail = (parsed as { detail: unknown }).detail;
+      if (typeof detail === "string") return `${fallback} ${detail}`;
+      if (Array.isArray(detail)) {
+        const first = detail[0] as { msg?: string; loc?: unknown[] } | undefined;
+        if (first?.msg) {
+          return `${fallback} ${first.msg}`;
+        }
+      }
+      if (detail && typeof detail === "object") {
+        try {
+          return `${fallback} ${JSON.stringify(detail)}`;
+        } catch {
+          return fallback;
+        }
+      }
+    }
+  } catch {
+    // raw wasn't JSON; fall through to plain text handling.
+  }
+  return `${fallback} ${raw}`;
+}
 
 const scoreLabels: Array<[keyof ScoreBreakdown, string]> = [
   ["talent_score", "天赋"],
@@ -45,6 +88,11 @@ export default function DraftPage() {
   const [agentAnswer, setAgentAnswer] = useState<AgentAskResponse | null>(null);
   const [simulation, setSimulation] = useState<Simulation | null>(null);
   const [news, setNews] = useState<NewsArticle[]>([]);
+  // Phase 3: locked-picks / user-override.  Each entry is one row in
+  // the sidebar UI.  prospect_id is required for the MVP dropdown;
+  // prospect_name is left null and is not exposed in this version.
+  const [lockedPicks, setLockedPicks] = useState<LockedPick[]>([]);
+  const [prospects, setProspects] = useState<Prospect[]>([]);
   const [isLoadingTeams, setIsLoadingTeams] = useState(true);
   const [isLoadingRoster, setIsLoadingRoster] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -86,6 +134,20 @@ export default function DraftPage() {
       })
       .catch((err) => {
         console.warn("[news] initial auto-load failed:", err);
+      });
+
+    // Phase 3: also load the prospect board so the locked-pick dropdown
+    // can populate.  Backend returns Prospect[] directly.
+    getProspects(2026)
+      .then((nextProspects) => {
+        if (isMounted) {
+          setProspects(nextProspects);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setProspects([]);
+        }
       });
 
     return () => {
@@ -246,15 +308,52 @@ export default function DraftPage() {
     setIsSimulating(true);
     setError(null);
 
+    // Phase 3: client-side pre-validation.  We do this before sending
+    // so the user sees immediate, friendly errors instead of waiting
+    // for a roundtrip 400 from the backend.
+    const seenPick = new Set<number>();
+    const seenProspect = new Set<number>();
+    const cleaned: LockedPick[] = [];
+    for (const lp of lockedPicks) {
+      if (!Number.isInteger(lp.pick_no) || lp.pick_no < 1 || lp.pick_no > 60) {
+        setError(`锁定 pick #${lp.pick_no} 越界，应在 1-60 之间。`);
+        setIsSimulating(false);
+        return;
+      }
+      if (seenPick.has(lp.pick_no)) {
+        setError(`pick #${lp.pick_no} 被重复锁定，请合并后再试。`);
+        setIsSimulating(false);
+        return;
+      }
+      if (lp.prospect_id == null) {
+        setError(`pick #${lp.pick_no} 必须先选择一名 prospect。`);
+        setIsSimulating(false);
+        return;
+      }
+      if (seenProspect.has(lp.prospect_id)) {
+        setError("同一个球员不能被锁定到多个顺位。");
+        setIsSimulating(false);
+        return;
+      }
+      seenPick.add(lp.pick_no);
+      seenProspect.add(lp.prospect_id);
+      cleaned.push({ pick_no: lp.pick_no, prospect_id: lp.prospect_id });
+    }
+
     try {
       const result = await simulateDraft({
         year: 2026,
         rounds: 1,
-        limit: 60,
+        limit: 30,
+        evaluate_trades: true,
+        // Send an empty array (not undefined) so the backend treats the
+        // request as the same shape either way.  `undefined` also works
+        // because the field is Optional, but explicit is clearer.
+        locked_picks: cleaned.length > 0 ? cleaned : undefined,
       });
       setSimulation(result);
-    } catch {
-      setError("模拟选秀失败，请检查后端服务或 draft_order 数据。");
+    } catch (err) {
+      setError(formatApiError(err, "模拟选秀失败，请检查后端服务或 draft_order 数据。"));
     } finally {
       setIsSimulating(false);
     }
@@ -480,8 +579,101 @@ export default function DraftPage() {
             <p className="mt-3 text-sm leading-6 text-court-muted">
               按选秀顺位逐签模拟，已选球员会从后续候选池移除。
             </p>
+
+            {/* Phase 3: locked picks / user override editor.
+                MVP uses a prospect_id dropdown.  Backend also supports
+                prospect_name free-text matching, but the UI does not
+                expose that to avoid name typos during demo. */}
+            <div className="mt-5">
+              <div className="flex items-end justify-between gap-3">
+                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
+                  手动锁定 picks
+                </p>
+                <button
+                  className="h-8 rounded-md border border-court-line/50 px-3 text-[11px] font-black uppercase tracking-[0.16em] text-court-line transition hover:border-court-line hover:bg-court-line hover:text-court-black disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={prospects.length === 0}
+                  onClick={() => {
+                    setLockedPicks((arr) => [
+                      ...arr,
+                      { pick_no: 1, prospect_id: null },
+                    ]);
+                  }}
+                  type="button"
+                >
+                  + 添加锁定
+                </button>
+              </div>
+
+              {lockedPicks.length === 0 ? (
+                <p className="mt-3 text-xs leading-5 text-court-muted">
+                  未锁定任何顺位，将使用自动模拟。后端也支持按
+                  prospect_name 锁定，但本阶段 UI 暂未暴露。
+                </p>
+              ) : (
+                <div className="mt-3 grid gap-2">
+                  {lockedPicks.map((lp, idx) => (
+                    <div
+                      className="grid grid-cols-[68px_1fr_32px] items-center gap-2"
+                      key={`locked-${idx}`}
+                    >
+                      <input
+                        aria-label="locked pick number"
+                        className="h-9 rounded-md border border-white/10 bg-court-black px-2 text-sm font-bold text-court-text outline-none transition focus:border-court-line"
+                        max={60}
+                        min={1}
+                        type="number"
+                        value={lp.pick_no}
+                        onChange={(event) => {
+                          const next = Number(event.target.value);
+                          setLockedPicks((arr) =>
+                            arr.map((row, i) =>
+                              i === idx
+                                ? { ...row, pick_no: Number.isFinite(next) ? next : 1 }
+                                : row,
+                            ),
+                          );
+                        }}
+                      />
+                      <select
+                        aria-label="locked prospect"
+                        className="h-9 rounded-md border border-white/10 bg-court-black px-2 text-sm font-semibold text-court-text outline-none transition focus:border-court-line"
+                        disabled={prospects.length === 0}
+                        value={lp.prospect_id == null ? "" : String(lp.prospect_id)}
+                        onChange={(event) => {
+                          const raw = event.target.value;
+                          const value = raw === "" ? null : Number(raw);
+                          setLockedPicks((arr) =>
+                            arr.map((row, i) =>
+                              i === idx ? { ...row, prospect_id: value } : row,
+                            ),
+                          );
+                        }}
+                      >
+                        <option value="">选择 prospect</option>
+                        {prospects.map((p) => (
+                          <option key={p.id} value={String(p.id)}>
+                            #{p.id} · {p.name} · {p.position} · UP {p.upside_score}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        aria-label="remove locked pick"
+                        className="h-9 rounded-md border border-white/15 bg-court-black text-sm font-black text-court-muted transition hover:border-red-300/60 hover:text-red-200"
+                        onClick={() => {
+                          setLockedPicks((arr) => arr.filter((_, i) => i !== idx));
+                        }}
+                        type="button"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <button
-              className="mt-4 h-11 w-full rounded-md border border-court-line/50 bg-court-black text-sm font-black text-court-line transition hover:border-court-line hover:bg-court-line hover:text-court-black disabled:cursor-not-allowed disabled:opacity-60"
+              className="mt-5 h-11 w-full rounded-md border border-court-line/50 bg-court-black text-sm font-black text-court-line transition hover:border-court-line hover:bg-court-line hover:text-court-black disabled:cursor-not-allowed disabled:opacity-60"
               disabled={isSimulating}
               onClick={handleSimulateDraft}
               type="button"
@@ -887,56 +1079,67 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
         </div>
 
         <div className="max-h-[620px] overflow-y-auto">
-          {simulation.picks.map((pick) => (
-            <article
-              className="border-t border-white/10 px-4 py-4 transition hover:bg-white/[0.03]"
-              key={pick.pick}
-            >
-              <div className="grid grid-cols-[64px_82px_1fr_72px] items-center gap-0">
-                <p className="text-lg font-black text-court-line">
-                  #{pick.pick}
-                </p>
-                <p className="text-base font-black">{pick.team.abbr}</p>
-                <div className="min-w-0">
-                  <p className="truncate text-base font-black">
-                    {pick.selected_player.prospect.name}
+          {simulation.picks.map((pick) => {
+            const locked = isPickLocked(pick);
+            return (
+              <article
+                className="border-t border-white/10 px-4 py-4 transition hover:bg-white/[0.03]"
+                key={pick.pick}
+              >
+                <div className="grid grid-cols-[64px_82px_1fr_72px] items-center gap-0">
+                  <p className="flex items-center text-lg font-black text-court-line">
+                    #{pick.pick}
+                    {locked ? (
+                      <span
+                        className="ml-2 inline-flex items-center gap-1 rounded-md border border-amber-300/40 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-amber-200"
+                        title="This pick was locked by user override"
+                      >
+                        手动锁定
+                      </span>
+                    ) : null}
                   </p>
-                  <p className="mt-1 truncate text-xs font-bold text-court-muted">
-                    {pick.selected_player.prospect.position} ·{" "}
-                    {pick.selected_player.prospect.archetype}
-                    {pick.draft_order_note ? ` · ${pick.draft_order_note}` : ""}
-                  </p>
-                </div>
-                <p className="text-right text-lg font-black text-court-text">
-                  {pick.selected_player.scores.final_score}
-                </p>
-              </div>
-              <details className="mt-3 rounded-md border border-white/10 bg-court-black/60 px-3 py-2">
-                <summary className="cursor-pointer text-xs font-black uppercase tracking-[0.12em] text-court-line">
-                  Agent process · {pick.trade_evaluation.action} ·{" "}
-                  {Math.round(pick.trade_evaluation.probability * 100)}%
-                </summary>
-                <div className="mt-3 grid gap-3 text-sm leading-6 text-court-muted">
-                  <p>{pick.trade_evaluation.rationale}</p>
-                  <ul className="grid gap-2">
-                    {pick.decision_log.map((line) => (
-                      <li key={line}>{line}</li>
-                    ))}
-                  </ul>
-                  <p>
-                    Live board:{" "}
-                    {pick.candidate_board
-                      .slice(0, 5)
-                      .map(
-                        (candidate) =>
-                          `${candidate.prospect.name} (${candidate.scores.final_score})`,
-                      )
-                      .join(", ")}
+                  <p className="text-base font-black">{pick.team.abbr}</p>
+                  <div className="min-w-0">
+                    <p className="truncate text-base font-black">
+                      {pick.selected_player.prospect.name}
+                    </p>
+                    <p className="mt-1 truncate text-xs font-bold text-court-muted">
+                      {pick.selected_player.prospect.position} ·{" "}
+                      {pick.selected_player.prospect.archetype}
+                      {pick.draft_order_note ? ` · ${pick.draft_order_note}` : ""}
+                    </p>
+                  </div>
+                  <p className="text-right text-lg font-black text-court-text">
+                    {pick.selected_player.scores.final_score}
                   </p>
                 </div>
-              </details>
-            </article>
-          ))}
+                <details className="mt-3 rounded-md border border-white/10 bg-court-black/60 px-3 py-2">
+                  <summary className="cursor-pointer text-xs font-black uppercase tracking-[0.12em] text-court-line">
+                    Agent process · {pick.trade_evaluation.action} ·{" "}
+                    {Math.round(pick.trade_evaluation.probability * 100)}%
+                  </summary>
+                  <div className="mt-3 grid gap-3 text-sm leading-6 text-court-muted">
+                    <p>{pick.trade_evaluation.rationale}</p>
+                    <ul className="grid gap-2">
+                      {pick.decision_log.map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                    <p>
+                      Live board:{" "}
+                      {pick.candidate_board
+                        .slice(0, 5)
+                        .map(
+                          (candidate) =>
+                            `${candidate.prospect.name} (${candidate.scores.final_score})`,
+                        )
+                        .join(", ")}
+                    </p>
+                  </div>
+                </details>
+              </article>
+            );
+          })}
         </div>
       </div>
     </section>

@@ -115,6 +115,20 @@ export type SimulatePayload = {
   year: number;
   rounds: number;
   limit: number;
+  evaluate_trades?: boolean;
+  // Phase 3: user-override / locked picks.  Each entry pins a specific
+  // pick_no to a specific prospect.  The backend (Phase 2) also accepts
+  // a free-text `prospect_name` fallback, but the MVP frontend only
+  // exposes the prospect_id dropdown — name-based free-text input is
+  // left as a follow-up enhancement.  We do NOT remove or rename the
+  // backend's prospect_name capability here.
+  locked_picks?: LockedPick[] | null;
+};
+
+export type LockedPick = {
+  pick_no: number;
+  prospect_id?: number | null;
+  prospect_name?: string | null;
 };
 
 export type AgentExplanation = {
@@ -200,6 +214,10 @@ export function getTeamPicks(
   return request<TeamPick[]>(
     `/api/teams/${teamId}/picks?year=${year}`,
   );
+}
+
+export function getProspects(year = 2026): Promise<Prospect[]> {
+  return request<Prospect[]>(`/api/prospects?year=${year}`);
 }
 
 export function getRecommendation(
