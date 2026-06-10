@@ -4,13 +4,14 @@ from dataclasses import dataclass
 from typing import Optional, Protocol
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.draft import DraftOrder
 from app.models.prospect import Prospect
 from app.models.team import TeamNeed
 from app.schemas.simulation import (
+    LockedPickRequest,
     SimulateRequest,
     SimulateResponse,
     SimulatedPickRead,
@@ -123,6 +124,130 @@ def adjust_team_need_after_pick(team_need: TeamNeedSnapshot, prospect: object) -
 # Main simulation
 # ---------------------------------------------------------------------------
 
+def _resolve_locked_prospect(
+    db: Session,
+    year: int,
+    locked: LockedPickRequest,
+) -> Prospect:
+    """Resolve a single LockedPickRequest to a Prospect in the given year.
+
+    Returns the resolved Prospect, or raises HTTPException(400).
+
+    Rules:
+      - Must provide prospect_id or non-empty prospect_name.
+      - prospect_id must match an existing prospect with year == year.
+      - prospect_name is matched case-insensitive (exact, after strip).
+      - prospect_name matching multiple rows is rejected as ambiguous.
+    """
+    if locked.prospect_id is None and not (
+        locked.prospect_name and locked.prospect_name.strip()
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"pick_no={locked.pick_no}: prospect_id or prospect_name is required"
+            ),
+        )
+
+    if locked.prospect_id is not None:
+        prospect = db.scalar(
+            select(Prospect).where(
+                Prospect.id == locked.prospect_id,
+                Prospect.year == year,
+            )
+        )
+        if prospect is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"pick_no={locked.pick_no}: prospect_id={locked.prospect_id} "
+                    f"not found in year {year}"
+                ),
+            )
+        return prospect
+
+    # prospect_name: case-insensitive exact match
+    name_norm = locked.prospect_name.strip().lower()
+    matches = list(
+        db.scalars(
+            select(Prospect).where(
+                Prospect.year == year,
+                func.lower(Prospect.name) == name_norm,
+            )
+        )
+    )
+    if not matches:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"pick_no={locked.pick_no}: prospect_name={locked.prospect_name!r} "
+                f"not found in year {year}"
+            ),
+        )
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"pick_no={locked.pick_no}: prospect_name={locked.prospect_name!r} "
+                f"is ambiguous ({len(matches)} matches)"
+            ),
+        )
+    return matches[0]
+
+
+def _validate_locked_picks(
+    db: Session,
+    request: SimulateRequest,
+    draft_pick_nos: list[int],
+) -> dict[int, Prospect]:
+    """Validate the locked_picks block and return a `pick_no -> Prospect` map.
+
+    All errors are HTTP 400 with a structured detail message. The map
+    contains only those pick_nos that the user requested to lock; the main
+    loop can simply check `pick_no in locked_prospects` to branch.
+    """
+    if not request.locked_picks:
+        return {}
+
+    valid_picks = set(draft_pick_nos)
+    seen_pick_nos: set[int] = set()
+    seen_prospect_ids: set[int] = set()
+    resolved: dict[int, Prospect] = {}
+
+    for locked in request.locked_picks:
+        # duplicate pick_no
+        if locked.pick_no in seen_pick_nos:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Duplicate locked pick_no={locked.pick_no}",
+            )
+        seen_pick_nos.add(locked.pick_no)
+
+        # pick_no not in draft order
+        if locked.pick_no not in valid_picks:
+            raise HTTPException(
+                status_code=400,
+                detail=f"pick_no={locked.pick_no} is not in the draft order",
+            )
+
+        # resolve the prospect (this also enforces year, name, presence)
+        prospect = _resolve_locked_prospect(db, request.year, locked)
+
+        # duplicate prospect across two locked picks
+        if prospect.id in seen_prospect_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Prospect {prospect.name!r} (id={prospect.id}) is already "
+                    f"locked by another pick"
+                ),
+            )
+        seen_prospect_ids.add(prospect.id)
+        resolved[locked.pick_no] = prospect
+
+    return resolved
+
+
 def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
     # 1. Compute effective_limit so that rounds actually constrains picks
     effective_limit = min(request.limit, 30 if request.rounds == 1 else 60)
@@ -138,6 +263,14 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
     )
     if not draft_order:
         raise HTTPException(status_code=404, detail="Draft order not found")
+
+    # 2. Validate locked_picks BEFORE we walk the board. Any error here is
+    #    a 400, not a 404 or 500. The map `locked_prospects[pick_no]` is the
+    #    resolved Prospect object the main loop will use.
+    draft_pick_nos = [draft_pick.pick_no for draft_pick in draft_order]
+    locked_prospects = _validate_locked_picks(
+        db=db, request=request, draft_pick_nos=draft_pick_nos,
+    )
 
     prospects = list(
         db.scalars(
@@ -174,46 +307,113 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
 
         team_need = team_need_state[draft_pick.team_id]
 
+        # Rank the live board regardless of whether this is a locked pick.
+        # Locked picks still want alternatives + candidate_board populated
+        # so the frontend can render a side-by-side comparison.
         rankings = rank_prospects(
             team_need=team_need,
             pick_no=draft_pick.pick_no,
             prospects=available_prospects,
         )
-        selected = rankings[0]
-        alternatives = rankings[1:4]
-        trade_evaluation = evaluate_trade_market(
-            pick_no=draft_pick.pick_no,
-            top_score=selected.final_score,
-            alternative_scores=[ranking.final_score for ranking in alternatives],
-            evaluate_trades=request.evaluate_trades,
-        )
-        decision_log = build_decision_log(
-            pick_no=draft_pick.pick_no,
-            team_abbr=draft_pick.team.abbr,
-            selected_name=selected.prospect.name,
-            selected_score=selected.final_score,
-            alternatives=alternatives,
-            trade_evaluation=trade_evaluation,
-            draft_order_note=draft_pick.notes,
-        )
-        selected_prospect_ids.add(selected.prospect.id)
 
-        # Update team need state so later picks by this team reflect the selection
-        adjust_team_need_after_pick(team_need, selected.prospect)
+        if draft_pick.pick_no in locked_prospects:
+            chosen = locked_prospects[draft_pick.pick_no]
 
-        picks.append(
-            SimulatedPickRead(
-                pick=draft_pick.pick_no,
-                team=draft_pick.team,
-                original_team=draft_pick.original_team,
-                draft_order_note=draft_pick.notes,
-                selected_player=to_ranked_read(selected),
-                alternatives=[to_ranked_read(ranking) for ranking in alternatives],
-                candidate_board=[to_ranked_read(ranking) for ranking in rankings[:5]],
-                trade_evaluation=trade_evaluation,
-                decision_log=decision_log,
+            # Defence in depth: locked prospect must still be in the
+            # available board (i.e. not already auto-picked above). The
+            # validator already rejects duplicate prospect_ids across two
+            # locked picks, so the only way this can fail is when an
+            # earlier auto pick already took this prospect.
+            chosen_ranking = next(
+                (r for r in rankings if r.prospect.id == chosen.id), None,
             )
-        )
+            if chosen_ranking is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"pick_no={draft_pick.pick_no}: locked prospect "
+                        f"{chosen.name!r} is no longer available"
+                    ),
+                )
+
+            # Surface the chosen prospect at position 0; the rest of the
+            # board stays in score order. This keeps alternatives and
+            # candidate_board meaningful for the UI.
+            override_rankings = [chosen_ranking] + [
+                r for r in rankings if r.prospect.id != chosen.id
+            ]
+            alternatives = override_rankings[1:4]
+            trade_evaluation = evaluate_trade_market(
+                pick_no=draft_pick.pick_no,
+                top_score=chosen_ranking.final_score,
+                alternative_scores=[r.final_score for r in alternatives],
+                evaluate_trades=request.evaluate_trades,
+            )
+            decision_log = build_decision_log(
+                pick_no=draft_pick.pick_no,
+                team_abbr=draft_pick.team.abbr,
+                selected_name=chosen.name,
+                selected_score=chosen_ranking.final_score,
+                alternatives=alternatives,
+                trade_evaluation=trade_evaluation,
+                draft_order_note=draft_pick.notes,
+                locked=True,
+            )
+            selected_prospect_ids.add(chosen.id)
+            adjust_team_need_after_pick(team_need, chosen)
+
+            picks.append(
+                SimulatedPickRead(
+                    pick=draft_pick.pick_no,
+                    team=draft_pick.team,
+                    original_team=draft_pick.original_team,
+                    draft_order_note=draft_pick.notes,
+                    selected_player=to_ranked_read(chosen_ranking),
+                    alternatives=[to_ranked_read(r) for r in alternatives],
+                    candidate_board=[
+                        to_ranked_read(r) for r in override_rankings[:5]
+                    ],
+                    trade_evaluation=trade_evaluation,
+                    decision_log=decision_log,
+                )
+            )
+        else:
+            # ---- AUTO PICK BRANCH (v1) ----
+            selected = rankings[0]
+            alternatives = rankings[1:4]
+            trade_evaluation = evaluate_trade_market(
+                pick_no=draft_pick.pick_no,
+                top_score=selected.final_score,
+                alternative_scores=[ranking.final_score for ranking in alternatives],
+                evaluate_trades=request.evaluate_trades,
+            )
+            decision_log = build_decision_log(
+                pick_no=draft_pick.pick_no,
+                team_abbr=draft_pick.team.abbr,
+                selected_name=selected.prospect.name,
+                selected_score=selected.final_score,
+                alternatives=alternatives,
+                trade_evaluation=trade_evaluation,
+                draft_order_note=draft_pick.notes,
+            )
+            selected_prospect_ids.add(selected.prospect.id)
+            adjust_team_need_after_pick(team_need, selected.prospect)
+
+            picks.append(
+                SimulatedPickRead(
+                    pick=draft_pick.pick_no,
+                    team=draft_pick.team,
+                    original_team=draft_pick.original_team,
+                    draft_order_note=draft_pick.notes,
+                    selected_player=to_ranked_read(selected),
+                    alternatives=[to_ranked_read(ranking) for ranking in alternatives],
+                    candidate_board=[
+                        to_ranked_read(ranking) for ranking in rankings[:5]
+                    ],
+                    trade_evaluation=trade_evaluation,
+                    decision_log=decision_log,
+                )
+            )
 
     return SimulateResponse(
         year=request.year,
@@ -295,6 +495,7 @@ def build_decision_log(
     alternatives,
     trade_evaluation: TradeEvaluation,
     draft_order_note: str | None,
+    locked: bool = False,
 ) -> list[str]:
     alt_summary = ", ".join(
         f"{ranking.prospect.name} ({ranking.final_score})" for ranking in alternatives
@@ -315,7 +516,9 @@ def build_decision_log(
                 f"{trade_evaluation.rationale}"
             ),
             f"GM submits {selected_name}; player is removed from later picks.",
-            "Team needs are updated after the pick for later selections.",
         ]
     )
+    if locked:
+        log.append("This pick was locked by user override.")
+    log.append("Team needs are updated after the pick for later selections.")
     return log

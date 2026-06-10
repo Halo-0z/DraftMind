@@ -1,4 +1,53 @@
+from __future__ import annotations
+
+import pytest
 from fastapi.testclient import TestClient
+
+from app.services.llm_service import LLMService
+
+
+@pytest.fixture(autouse=True)
+def _force_mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force agent_api tests to use the deterministic mock explanation.
+
+    The agent endpoint normally calls the configured LLM provider
+    (e.g. hunyuan) when `LLM_API_KEY` is set.  For test stability we
+    always short-circuit `LLMService.explain_recommendation` to its
+    in-process mock implementation, regardless of any developer
+    `.env` or environment variable settings.
+
+    We also wrap the LLMService instance with a subclass that reports
+    `is_mock = True` and `provider = "mock"` so the response's
+    `is_mock` flag is correct.
+    """
+    real = LLMService()
+
+    def always_mock(recommendation, question, rag_context=""):
+        return real._mock_explanation(
+            recommendation=recommendation,
+            question=question,
+            rag_context=rag_context,
+        )
+
+    class _MockLLMService(LLMService):
+        @property
+        def provider(self) -> str:
+            return "mock"
+
+        @property
+        def is_mock(self) -> bool:
+            return True
+
+        def explain_recommendation(self, recommendation, question, rag_context=""):
+            return always_mock(
+                recommendation=recommendation,
+                question=question,
+                rag_context=rag_context,
+            )
+
+    monkeypatch.setattr(
+        "app.services.agent_service.LLMService", _MockLLMService
+    )
 
 
 def test_agent_ask_returns_mock_explanation(client: TestClient) -> None:
