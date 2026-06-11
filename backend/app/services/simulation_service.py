@@ -595,31 +595,59 @@ def _signal_matches_pick(
     pick_no: int,
     selected_prospect_name: str | None,
 ) -> bool:
-    """A signal is considered relevant to a pick if at least one of
-    the following holds:
+    """Decide whether a cached news signal is relevant to a given pick.
 
-    * ``signal.team_abbr`` equals the current pick's team abbr (or the
-      pick team's abbr is not known).
-    * ``signal.pick_no`` equals the current ``pick_no``.
-    * ``signal.prospect_name`` equals the selected prospect's name
-      (case-insensitive substring match — signals rarely have the
-      exact same string form as the DB-stored prospect name).
+    The decision is **conservative on cross-team leak**: a signal that
+    explicitly names a *different* team is *never* allowed to leak into
+    the current pick via ``pick_no`` or ``prospect_name`` fallbacks. This
+    is the strong guarantee that README §7.4 advertises.
 
-    Signals with no team/pick/prospect context (``team_abbr`` and
-    ``pick_no`` and ``prospect_name`` all ``None``) are *never* shown
-    because they cannot be tied to a specific draft situation.
+    Matching rules, in order:
+
+    1. **Hard team guard.** If ``signal.team_abbr`` is set (non-empty),
+       and it normalises to a team *different* from the current pick's
+       team, the signal is dropped (``return False``). It is irrelevant
+       regardless of whether ``pick_no`` or ``prospect_name`` happen to
+       match.
+    2. **Same-team signal** (including empty-team signals that we
+       already eliminated above). A same-team signal is shown when:
+       - it is team-level (no ``pick_no`` and no ``prospect_name``), or
+       - it is pick-specific (``signal.pick_no == pick_no``), or
+       - it names the selected prospect (case-insensitive substring).
+    3. **Teamless signal** (``signal.team_abbr`` empty/``None``) was
+       short-circuited in step 1. We re-check it here: it may match
+       by ``pick_no`` or by ``prospect_name`` only. A teamless signal
+       that matches neither is dropped.
+
+    Signals with no team, no pick, and no prospect context are *never*
+    shown: there is no way to tie them to a specific draft situation.
     """
-    if signal.team_abbr and signal.team_abbr.upper() == (team_abbr or "").upper():
-        return True
-    if signal.pick_no is not None and signal.pick_no == pick_no:
-        return True
-    if (
+    signal_team = (signal.team_abbr or "").strip().upper()
+    pick_team = (team_abbr or "").strip().upper()
+
+    has_pick_match = (
+        signal.pick_no is not None and signal.pick_no == pick_no
+    )
+    has_prospect_match = bool(
         signal.prospect_name
         and selected_prospect_name
         and signal.prospect_name.lower() in selected_prospect_name.lower()
-    ):
-        return True
-    return False
+    )
+
+    # Step 1: hard cross-team guard.  A signal that names a different
+    # team must never leak via pick_no / prospect_name fallbacks.
+    if signal_team:
+        if signal_team != pick_team:
+            return False
+        # Step 2: same-team signal is relevant if it is team-level,
+        # pick-specific, or prospect-specific.
+        is_team_level = (
+            signal.pick_no is None and not signal.prospect_name
+        )
+        return is_team_level or has_pick_match or has_prospect_match
+
+    # Step 3: teamless signals may only match by pick_no or prospect.
+    return has_pick_match or has_prospect_match
 
 
 def _format_market_line(signal: NewsSignal) -> str:

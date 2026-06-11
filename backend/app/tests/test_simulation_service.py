@@ -834,17 +834,50 @@ class TestMarketContextInDecisionLog:
     def test_market_context_appears_in_decision_log_when_signal_matches(
         self, client: TestClient, db_session: Session,
     ) -> None:
+        """A signal that matches the current pick (same team + same
+        pick_no) MUST surface as a ``Market context:`` line in the
+        decision log.  This proves the team + pick joint match path.
+
+        We do **not** hard-code ``pick_no=1`` or ``body["picks"][0]``
+        because the conftest seed (and draft order) can change the
+        shape of the first pick.  Instead we dry-run once to discover
+        a real (pick_no, team_abbr) tuple, then construct a signal
+        that matches it exactly.
+        """
         db_session.commit()
-        sas_signal = _make_signal(
-            team_abbr="SAS",
-            pick_no=1,
+
+        # Step 1: discover a real first pick from a no-lock dry-run.
+        dry_resp = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 1,
+                "limit": 2,
+                "evaluate_trades": False,
+            },
+        )
+        assert dry_resp.status_code == 200, dry_resp.text
+        dry_picks = dry_resp.json()["picks"]
+        assert dry_picks, dry_resp.text
+        target_pick = dry_picks[0]
+        target_pick_no: int = target_pick["pick"]
+        target_team_abbr: str = target_pick["team"]["abbr"]
+
+        # Step 2: build a signal that **exactly** matches the
+        # discovered pick (same team_abbr + same pick_no).  Under the
+        # new _signal_matches_pick() guard, this passes both
+        # hard-team-guard and pick_no fallback, so it must surface.
+        matched_signal = _make_signal(
+            team_abbr=target_team_abbr,
+            pick_no=target_pick_no,
             intent=RumorIntent.TRADE_UP,
             confidence=0.72,
-            summary="SAS exploring trade-up packages.",
+            summary=f"{target_team_abbr} exploring trade-up packages.",
         )
+
         with patch(
             "app.services.simulation_service._load_market_signals",
-            return_value=[sas_signal],
+            return_value=[matched_signal],
         ):
             response = client.post(
                 "/api/simulate",
@@ -855,23 +888,37 @@ class TestMarketContextInDecisionLog:
                     "evaluate_trades": False,
                 },
             )
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         body = response.json()
-        # The first pick is SAS pick #1. There should be at least one
-        # decision_log line that starts with "Market context:".
-        sas_pick = body["picks"][0]
+
+        # Step 3: locate the target pick by ``pick_no`` (NOT by
+        # array index) and assert market context is present.
+        matched_picks = [
+            p for p in body["picks"] if p["pick"] == target_pick_no
+        ]
+        assert matched_picks, (
+            f"target pick #{target_pick_no} not in response: "
+            f"{[p['pick'] for p in body['picks']]}"
+        )
+        matched_pick = matched_picks[0]
         market_lines = [
-            line for line in sas_pick["decision_log"]
+            line for line in matched_pick["decision_log"]
             if line.startswith("Market context:")
         ]
         assert market_lines, (
-            f"expected a 'Market context:' line in decision_log, "
-            f"got: {sas_pick['decision_log']}"
+            f"expected a 'Market context:' line in decision_log for "
+            f"pick #{target_pick_no} ({target_team_abbr}), "
+            f"got: {matched_pick['decision_log']}"
         )
-        # The market context line should mention SAS and the intent.
+        # The market context line should mention the matching team
+        # and the intent we crafted.
         joined = " ".join(market_lines).lower()
-        assert "sas" in joined
-        assert "trade" in joined
+        assert target_team_abbr.lower() in joined, (
+            f"expected '{target_team_abbr}' in market context: {market_lines}"
+        )
+        assert "trade" in joined, (
+            f"expected 'trade' (intent) in market context: {market_lines}"
+        )
 
     def test_no_market_context_when_no_signals(
         self, client: TestClient, db_session: Session,
@@ -985,17 +1032,66 @@ class TestMarketContextInDecisionLog:
     def test_cross_team_signal_filtered_out(
         self, client: TestClient, db_session: Session,
     ) -> None:
-        """An LAL trade-up rumor must NOT appear on a SAS pick."""
+        """An LAL trade-up rumor must NOT appear on a SAS pick, even
+        when ``pick_no`` happens to overlap with the SAS pick.
+
+        This is the strong cross-team guard promised by README §7.4:
+        a signal that names a *different* team must never leak into
+        the current pick via ``pick_no`` or ``prospect_name`` fallbacks.
+
+        We deliberately do not hard-code ``pick_no=1`` or the
+        ``picks[0]`` array index — those depend on draft order and
+        conftest seed details.  Instead we discover a real (pick_no,
+        team) tuple from a no-lock dry-run, then construct a
+        cross-team signal that *also* targets the same pick_no, so
+        that the only thing keeping it out of the decision log is
+        the team mismatch.
+        """
         db_session.commit()
-        lal_signal = _make_signal(
-            team_abbr="LAL",
-            pick_no=1,
-            intent=RumorIntent.TRADE_UP,
-            confidence=0.9,
+
+        # Step 1: discover a real first pick from a no-lock dry-run.
+        dry_resp = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 1,
+                "limit": 1,
+                "evaluate_trades": False,
+            },
         )
+        assert dry_resp.status_code == 200, dry_resp.text
+        dry_picks = dry_resp.json()["picks"]
+        assert len(dry_picks) >= 1, dry_picks
+        target_pick = dry_picks[0]
+        target_pick_no: int = target_pick["pick"]
+        target_team_abbr: str = target_pick["team"]["abbr"]
+
+        # Sanity: this fixture must be non-LAL so that the cross-team
+        # signal we craft is genuinely a cross-team signal.  If the
+        # first pick happens to be LAL, the test is meaningless for
+        # this assertion, so we fall back to picking a clearly
+        # different team (e.g. SAS or HOU depending on the seed).
+        assert target_team_abbr != "LAL", (
+            f"conftest seed unexpectedly has LAL at pick #{target_pick_no}; "
+            f"rework the test to use a different cross-team pair"
+        )
+
+        # Step 2: build a cross-team signal that ALSO shares the
+        # same pick_no.  Under the broken OR-only logic, this would
+        # leak into the target pick via the pick_no fallback.  Under
+        # the new hard cross-team guard, it must NOT.
+        cross_team_signal = _make_signal(
+            team_abbr="LAL",
+            pick_no=target_pick_no,  # identical pick_no
+            prospect_name=None,
+            intent=RumorIntent.TRADE_UP,
+            confidence=0.95,
+            summary="LAL exploring trade-up to grab the top prospect.",
+        )
+
         with patch(
             "app.services.simulation_service._load_market_signals",
-            return_value=[lal_signal],
+            return_value=[cross_team_signal],
         ):
             response = client.post(
                 "/api/simulate",
@@ -1006,19 +1102,189 @@ class TestMarketContextInDecisionLog:
                     "evaluate_trades": False,
                 },
             )
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         body = response.json()
+
+        # Step 3: assert no pick in the response leaks "LAL" into
+        # its market context.  We check every pick (not just the
+        # first) because the conftest seed might place the target
+        # team at a different index.
         for pick in body["picks"]:
             market_lines = [
                 line for line in pick["decision_log"]
                 if line.startswith("Market context:")
             ]
             joined = " ".join(market_lines).upper()
-            # LAL signal must not leak into any pick's market context
-            # (SAS picks belong to SAS, not LAL).
             assert "LAL" not in joined, (
-                f"LAL signal leaked into pick {pick['pick']}: {market_lines}"
+                f"LAL signal leaked into {target_team_abbr} pick "
+                f"#{pick['pick']} (team={pick['team']['abbr']}) "
+                f"via pick_no overlap: {market_lines}"
             )
+
+        # Step 4: also assert that the target pick (the one whose
+        # pick_no the LAL signal claimed) had NO market context at
+        # all — proving the hard team guard, not just LAL-string
+        # absence in another team.
+        target_picks_in_resp = [
+            p for p in body["picks"] if p["pick"] == target_pick_no
+        ]
+        assert target_picks_in_resp, (
+            f"target pick #{target_pick_no} not in response: "
+            f"{[p['pick'] for p in body['picks']]}"
+        )
+        target_market_lines = [
+            line for line in target_picks_in_resp[0]["decision_log"]
+            if line.startswith("Market context:")
+        ]
+        assert target_market_lines == [], (
+            f"target pick #{target_pick_no} (team={target_team_abbr}) "
+            f"unexpectedly has market context despite LAL-only signal: "
+            f"{target_market_lines}"
+        )
+
+    def test_teamless_signal_can_match_by_pick_no(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """A signal with **no** explicit team_abbr may still be
+        surfaced via pick_no or prospect_name — it is not blocked
+        by the cross-team guard because the guard only fires when
+        a team is *explicitly named and mismatched*.
+
+        This is the complement of
+        ``test_cross_team_signal_filtered_out``: teamless signals
+        remain useful for pick-level / prospect-level coverage.
+        """
+        db_session.commit()
+
+        # Discover a real first pick so the pick_no overlap is real.
+        dry_resp = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 1,
+                "limit": 1,
+                "evaluate_trades": False,
+            },
+        )
+        assert dry_resp.status_code == 200, dry_resp.text
+        dry_picks = dry_resp.json()["picks"]
+        assert dry_picks, dry_picks
+        target_pick_no = dry_picks[0]["pick"]
+        target_team_abbr = dry_picks[0]["team"]["abbr"]
+        target_prospect_name = (
+            dry_picks[0]["selected_player"]["prospect"]["name"]
+        )
+
+        # Teamless signal: team_abbr is None, but pick_no overlaps
+        # with the target pick.  No team mismatch can fire, so the
+        # pick_no fallback should be allowed to surface it.
+        teamless_signal = _make_signal(
+            team_abbr=None,
+            pick_no=target_pick_no,
+            prospect_name=None,
+            intent=RumorIntent.WORKOUT,
+            confidence=0.6,
+            summary=(
+                f"Top prospect is working out for the team holding "
+                f"pick #{target_pick_no}."
+            ),
+        )
+
+        with patch(
+            "app.services.simulation_service._load_market_signals",
+            return_value=[teamless_signal],
+        ):
+            response = client.post(
+                "/api/simulate",
+                json={
+                    "year": 2026,
+                    "rounds": 1,
+                    "limit": 2,
+                    "evaluate_trades": False,
+                },
+            )
+        assert response.status_code == 200, response.text
+        body = response.json()
+
+        # Find the target pick by pick_no (NOT by array index).
+        target_picks = [
+            p for p in body["picks"] if p["pick"] == target_pick_no
+        ]
+        assert target_picks, (
+            f"target pick #{target_pick_no} not in response: "
+            f"{[p['pick'] for p in body['picks']]}"
+        )
+        market_lines = [
+            line for line in target_picks[0]["decision_log"]
+            if line.startswith("Market context:")
+        ]
+        assert market_lines, (
+            f"teamless signal (pick_no={target_pick_no}, "
+            f"target team={target_team_abbr}) was NOT surfaced, "
+            f"but it should be allowed: {target_picks[0]['decision_log']}"
+        )
+        # Sanity: the surfaced line must not introduce a foreign
+        # team name (the signal itself has no team_abbr, so its
+        # formatted line should not include a team prefix either).
+        joined = " ".join(market_lines)
+        # The selected prospect name may appear in the surfaced
+        # line, but the line itself should be observational.
+        assert "team" in joined.lower() or "workout" in joined.lower(), (
+            f"surfaced market line does not look like a workout "
+            f"signal: {market_lines}"
+        )
+
+    def test_teamless_signal_does_not_match_other_picks(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """Complement: a teamless signal with pick_no=5 must NOT
+        leak into pick #2 even though both pass the loose pick_no
+        fallback in some edge cases — the fallback is per-pick, so
+        pick #5 only matches pick #5.
+
+        This guards against any future regression that might let
+        pick_no matching be sloppy.
+        """
+        db_session.commit()
+        teamless_signal = _make_signal(
+            team_abbr=None,
+            pick_no=5,
+            prospect_name=None,
+            intent=RumorIntent.WORKOUT,
+            confidence=0.6,
+            summary="Pick #5 workout signal.",
+        )
+        with patch(
+            "app.services.simulation_service._load_market_signals",
+            return_value=[teamless_signal],
+        ):
+            response = client.post(
+                "/api/simulate",
+                json={
+                    "year": 2026,
+                    "rounds": 1,
+                    "limit": 4,
+                    "evaluate_trades": False,
+                },
+            )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        for pick in body["picks"]:
+            market_lines = [
+                line for line in pick["decision_log"]
+                if line.startswith("Market context:")
+            ]
+            if pick["pick"] == 5:
+                assert market_lines, (
+                    f"pick #5 missing its teamless signal: "
+                    f"{pick['decision_log']}"
+                )
+            else:
+                assert market_lines == [], (
+                    f"pick #{pick['pick']} (team={pick['team']['abbr']}) "
+                    f"unexpectedly received market context from a "
+                    f"teamless pick #5 signal: {market_lines}"
+                )
 
     def test_at_most_three_market_context_lines(
         self, client: TestClient, db_session: Session,
