@@ -87,6 +87,7 @@ export default function DraftPage() {
   const [isPickOverridden, setIsPickOverridden] = useState(false);
   const [agentAnswer, setAgentAnswer] = useState<AgentAskResponse | null>(null);
   const [simulation, setSimulation] = useState<Simulation | null>(null);
+  const [simulationRounds, setSimulationRounds] = useState<1 | 2>(1);
   const [news, setNews] = useState<NewsArticle[]>([]);
   // Phase 3: locked-picks / user-override.  Each entry is one row in
   // the sidebar UI.  prospect_id is required for the MVP dropdown;
@@ -229,6 +230,7 @@ export default function DraftPage() {
     () => teamPicks.find((p) => p.pick_no === pick) ?? null,
     [teamPicks, pick],
   );
+  const simulationPickLimit = simulationRounds === 1 ? 30 : 60;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -320,6 +322,9 @@ export default function DraftPage() {
         setIsSimulating(false);
         return;
       }
+      if (lp.pick_no > simulationPickLimit) {
+        continue;
+      }
       if (seenPick.has(lp.pick_no)) {
         setError(`pick #${lp.pick_no} 被重复锁定，请合并后再试。`);
         setIsSimulating(false);
@@ -343,8 +348,8 @@ export default function DraftPage() {
     try {
       const result = await simulateDraft({
         year: 2026,
-        rounds: 1,
-        limit: 30,
+        rounds: simulationRounds,
+        limit: simulationPickLimit,
         evaluate_trades: true,
         // Send an empty array (not undefined) so the backend treats the
         // request as the same shape either way.  `undefined` also works
@@ -579,6 +584,42 @@ export default function DraftPage() {
             <p className="mt-3 text-sm leading-6 text-court-muted">
               按选秀顺位逐签模拟，已选球员会从后续候选池移除。
             </p>
+
+            <div className="mt-5">
+              <p className="text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
+                模拟范围
+              </p>
+              <div className="mt-3 grid grid-cols-2 overflow-hidden rounded-md border border-white/10 bg-court-black">
+                {[
+                  { label: "第一轮", rounds: 1 as const, detail: "30 picks" },
+                  { label: "两轮", rounds: 2 as const, detail: "60 picks" },
+                ].map((option) => {
+                  const isActive = simulationRounds === option.rounds;
+                  return (
+                    <button
+                      aria-pressed={isActive}
+                      className={`h-12 px-3 text-sm font-black transition ${
+                        isActive
+                          ? "bg-court-line text-court-black"
+                          : "text-court-muted hover:bg-white/[0.04] hover:text-court-line"
+                      }`}
+                      key={option.rounds}
+                      onClick={() => setSimulationRounds(option.rounds)}
+                      type="button"
+                    >
+                      <span>{option.label}</span>
+                      <span className="ml-2 text-xs opacity-75">
+                        {option.detail}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-xs leading-5 text-court-muted">
+                当前将模拟 {simulationRounds === 1 ? "第一轮" : "两轮"} ·{" "}
+                {simulationPickLimit} picks；超出范围的锁定签会保留在表单中，但不会发送到本次模拟。
+              </p>
+            </div>
 
             {/* Phase 3: locked picks / user override editor.
                 MVP uses a prospect_id dropdown.  Backend also supports
