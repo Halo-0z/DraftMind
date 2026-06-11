@@ -1193,6 +1193,8 @@ function NewsPanel({
   onRefresh: () => void;
   prospectName: string | null;
 }) {
+  const [isNewsExpanded, setIsNewsExpanded] = useState(true);
+
   return (
     <section className="rounded-md border border-white/10 bg-court-panel p-5">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -1204,51 +1206,67 @@ function NewsPanel({
             相关新闻{prospectName ? ` · ${prospectName}` : ""}
           </h3>
           <p className="mt-2 text-sm leading-6 text-court-muted">
-            来自 ESPN、Sportando、虎扑篮球资讯等权威数据源；聚焦交易/选秀/伤病动态，供 GM 决策参考。
+            展示相关新闻资讯；进入模拟决策日志的选秀上下文会经过更严格筛选。
           </p>
         </div>
-        <button
-          className="h-11 rounded-md border border-court-line/50 bg-court-black px-4 text-sm font-black text-court-line transition hover:border-court-line hover:bg-court-line hover:text-court-black disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={isRefreshing}
-          onClick={onRefresh}
-          type="button"
-        >
-          {isRefreshing ? "刷新中..." : "刷新新闻"}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            aria-expanded={isNewsExpanded}
+            aria-label={isNewsExpanded ? "收起相关新闻" : "展开相关新闻"}
+            className="h-11 rounded-md border border-white/15 bg-court-black px-3 text-sm font-black text-court-muted transition hover:border-court-line/60 hover:text-court-line"
+            onClick={() => setIsNewsExpanded((value) => !value)}
+            type="button"
+          >
+            <span aria-hidden="true" className="mr-1">
+              {isNewsExpanded ? "▾" : "▸"}
+            </span>
+            {isNewsExpanded ? "收起" : `展开 · ${articles.length}`}
+          </button>
+          <button
+            className="h-11 rounded-md border border-court-line/50 bg-court-black px-4 text-sm font-black text-court-line transition hover:border-court-line hover:bg-court-line hover:text-court-black disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isRefreshing}
+            onClick={onRefresh}
+            type="button"
+          >
+            {isRefreshing ? "刷新中..." : "刷新新闻"}
+          </button>
+        </div>
       </div>
 
-      <div className="mt-5 grid gap-3">
-        {articles.length === 0 ? (
-          <p className="rounded-md border border-dashed border-white/15 bg-white/[0.02] px-4 py-6 text-sm leading-6 text-court-muted">
-            暂未抓到与该球员 / 球队相关的新闻。点击「刷新新闻」从中文 RSS 源拉取。
-          </p>
-        ) : (
-          articles.map((article) => (
-            <a
-              className="block rounded-md border border-white/10 bg-court-black/70 p-4 transition hover:border-court-line/60 hover:bg-court-black"
-              href={article.url}
-              key={article.id}
-              rel="noreferrer"
-              target="_blank"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold uppercase tracking-[0.16em] text-court-muted">
-                <span>
-                  {article.source} · {article.language === "zh" ? "中文" : "EN"}
-                </span>
-                <span>{formatPublishedAt(article.published_at)}</span>
-              </div>
-              <p className="mt-2 text-base font-black leading-snug text-court-text">
-                {article.title}
-              </p>
-              {article.summary ? (
-                <p className="mt-2 text-sm leading-6 text-court-muted">
-                  {article.summary}
+      {isNewsExpanded ? (
+        <div className="mt-5 grid gap-3">
+          {articles.length === 0 ? (
+            <p className="rounded-md border border-dashed border-white/15 bg-white/[0.02] px-4 py-6 text-sm leading-6 text-court-muted">
+              暂未抓到与该球员 / 球队相关的新闻。点击「刷新新闻」从中文 RSS 源拉取。
+            </p>
+          ) : (
+            articles.map((article) => (
+              <a
+                className="block rounded-md border border-white/10 bg-court-black/70 p-4 transition hover:border-court-line/60 hover:bg-court-black"
+                href={article.url}
+                key={article.id}
+                rel="noreferrer"
+                target="_blank"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold uppercase tracking-[0.16em] text-court-muted">
+                  <span>
+                    {article.source} · {article.language === "zh" ? "中文" : "EN"}
+                  </span>
+                  <span>{formatPublishedAt(article.published_at)}</span>
+                </div>
+                <p className="mt-2 text-base font-black leading-snug text-court-text">
+                  {article.title}
                 </p>
-              ) : null}
-            </a>
-          ))
-        )}
-      </div>
+                {article.summary ? (
+                  <p className="mt-2 text-sm leading-6 text-court-muted">
+                    {article.summary}
+                  </p>
+                ) : null}
+              </a>
+            ))
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }
