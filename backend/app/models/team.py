@@ -23,6 +23,10 @@ class Team(Base):
         back_populates="team",
         cascade="all, delete-orphan",
     )
+    need_profiles: Mapped[list["TeamNeedProfile"]] = relationship(
+        back_populates="team",
+        cascade="all, delete-orphan",
+    )
 
 
 class TeamNeed(Base):

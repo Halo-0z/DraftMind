@@ -30,3 +30,7 @@ class Prospect(Base):
         back_populates="prospect",
         cascade="all, delete-orphan",
     )
+    scouting_profiles: Mapped[list["ProspectScoutingProfile"]] = relationship(
+        back_populates="prospect",
+        cascade="all, delete-orphan",
+    )

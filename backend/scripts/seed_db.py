@@ -8,7 +8,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.database import Base, SessionLocal, engine
-from app.models import DraftOrder, Prospect, Roster, ScoutingReport, Team, TeamNeed
+from app.models import (
+    DraftOrder,
+    Prospect,
+    ProspectScoutingProfile,
+    Roster,
+    ScoutingReport,
+    Team,
+    TeamNeed,
+    TeamNeedProfile,
+)
 
 
 TEAMS = [
@@ -176,6 +185,30 @@ def seed() -> None:
 
         for abbr, needs in TEAM_NEEDS.items():
             db.add(TeamNeed(team_id=teams_by_abbr[abbr].id, year=2026, **needs))
+            db.add(
+                TeamNeedProfile(
+                    team_id=teams_by_abbr[abbr].id,
+                    year=2026,
+                    need_guard_depth=max(needs["need_pg"], needs["need_sg"]),
+                    need_wing_depth=needs["need_sf"],
+                    need_big_depth=max(needs["need_pf"], needs["need_c"]),
+                    need_center=needs["need_c"],
+                    need_spacing=needs["need_shooting"],
+                    need_shooting_volume=needs["need_shooting"],
+                    need_secondary_creation=needs["need_creation"],
+                    need_playmaking=needs["need_creation"],
+                    need_rim_protection=needs["need_defense"],
+                    need_defensive_rebounding=max(needs["need_c"], needs["need_defense"]),
+                    need_point_of_attack_defense=needs["need_defense"],
+                    need_team_defense=needs["need_defense"],
+                    team_timeline="rebuild" if abbr in {"WAS", "POR"} else "retool",
+                    source="seed",
+                    horizon="now",
+                    need_confidence=0.55,
+                    manual_override_reason="Seed profile derived from demo TeamNeed values.",
+                    scheme_tags="demo-seed",
+                )
+            )
 
         for abbr, players in MOCK_ROSTERS.items():
             for index, player in enumerate(players, start=1):
@@ -240,8 +273,63 @@ def seed() -> None:
                     ),
                 )
             )
+            db.add(_build_seed_scouting_profile(prospect))
 
         db.commit()
+
+
+def _build_seed_scouting_profile(prospect: Prospect) -> ProspectScoutingProfile:
+    archetype = prospect.archetype.lower()
+    is_big = prospect.position in {"C", "PF/C"} or "frontcourt" in archetype
+    is_guard = prospect.position in {"PG", "SG", "G"} or "guard" in archetype
+    is_shooter = prospect.three_pct >= 37 or "shooter" in archetype or "stretch" in archetype
+    is_defender = prospect.stocks >= 2 or "defender" in archetype or "rim protector" in archetype
+
+    return ProspectScoutingProfile(
+        prospect_id=prospect.id,
+        year=prospect.year,
+        shooting_volume=8 if is_shooter else (6 if prospect.three_pct >= 34 else 4),
+        shooting_versatility=8 if "movement" in archetype else (7 if is_shooter else 5),
+        spacing_value=8 if is_shooter else (6 if prospect.three_pct >= 34 else 4),
+        rim_pressure=7 if "pressure" in archetype or is_big else 5,
+        self_creation=8 if "creator" in archetype or "scoring guard" in archetype else 5,
+        secondary_creation=7 if prospect.apg >= 3.5 else 5,
+        passing_feel=8 if prospect.apg >= 5 else (6 if prospect.apg >= 3 else 4),
+        finishing=7 if prospect.fg_pct >= 52 else 5,
+        rim_protection=8 if "rim protector" in archetype else (7 if is_big and prospect.stocks >= 2 else 4),
+        defensive_rebounding=8 if prospect.rpg >= 8 else (6 if prospect.rpg >= 6 else 4),
+        offensive_rebounding=7 if prospect.rpg >= 8 and is_big else 5,
+        point_of_attack_defense=7 if is_defender and is_guard else 5,
+        switchability=7 if "wing" in archetype or "mobile" in archetype else 5,
+        team_defense=8 if is_defender else 5,
+        foul_discipline=5,
+        physicality=7 if prospect.weight >= 220 else 5,
+        height=prospect.height,
+        age=prospect.age,
+        nba_readiness=7 if prospect.risk_score <= 25 else 5,
+        upside=round(max(1, min(10, prospect.upside_score / 10))),
+        medical_risk=round(max(1, min(10, prospect.risk_score / 10))),
+        role_projection=prospect.archetype,
+        scheme_fit_tags=_seed_scheme_tags(prospect, archetype),
+        source="seed",
+        profile_confidence=0.55,
+        manual_override_reason="Seeded from demo box-score and archetype fields.",
+    )
+
+
+def _seed_scheme_tags(prospect: Prospect, archetype: str) -> str:
+    tags: list[str] = []
+    if prospect.position in {"C", "PF/C"}:
+        tags.append("frontcourt")
+    if "wing" in archetype:
+        tags.append("wing")
+    if prospect.three_pct >= 37 or "shooter" in archetype:
+        tags.append("spacing")
+    if prospect.stocks >= 2 or "defender" in archetype:
+        tags.append("defense")
+    if "creator" in archetype or prospect.apg >= 4:
+        tags.append("creation")
+    return ",".join(tags or ["demo-seed"])
 
 
 if __name__ == "__main__":
