@@ -20,6 +20,7 @@ from app.schemas.simulation import (
 from app.services.ranking_engine import rank_prospects
 from app.services.recommendation_service import to_ranked_read
 from app.services.team_need_service import get_or_infer_team_need
+from app.services.rumor_extractor import NewsSignal, extract_signals
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +290,11 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
     # by the same team reflect already-addressed needs.
     team_need_state: dict[int, TeamNeedSnapshot] = {}
 
+    # Market context (Phase 5B-M1): read cached news once per simulation
+    # and pass it to decision_log. This MUST NOT touch selected_player,
+    # ranking, or trade_evaluation — see _load_market_signals docstring.
+    market_signals: list[NewsSignal] = _load_market_signals(db)
+
     for draft_pick in draft_order:
         available_prospects = [
             prospect for prospect in prospects if prospect.id not in selected_prospect_ids
@@ -358,6 +364,12 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                 trade_evaluation=trade_evaluation,
                 draft_order_note=draft_pick.notes,
                 locked=True,
+                market_context_lines=_market_context_lines_for_pick(
+                    signals=market_signals,
+                    team_abbr=draft_pick.team.abbr,
+                    pick_no=draft_pick.pick_no,
+                    selected_prospect_name=chosen.name,
+                ),
             )
             selected_prospect_ids.add(chosen.id)
             adjust_team_need_after_pick(team_need, chosen)
@@ -395,6 +407,12 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                 alternatives=alternatives,
                 trade_evaluation=trade_evaluation,
                 draft_order_note=draft_pick.notes,
+                market_context_lines=_market_context_lines_for_pick(
+                    signals=market_signals,
+                    team_abbr=draft_pick.team.abbr,
+                    pick_no=draft_pick.pick_no,
+                    selected_prospect_name=selected.prospect.name,
+                ),
             )
             selected_prospect_ids.add(selected.prospect.id)
             adjust_team_need_after_pick(team_need, selected.prospect)
@@ -496,6 +514,7 @@ def build_decision_log(
     trade_evaluation: TradeEvaluation,
     draft_order_note: str | None,
     locked: bool = False,
+    market_context_lines: list[str] | None = None,
 ) -> list[str]:
     alt_summary = ", ".join(
         f"{ranking.prospect.name} ({ranking.final_score})" for ranking in alternatives
@@ -521,4 +540,139 @@ def build_decision_log(
     if locked:
         log.append("This pick was locked by user override.")
     log.append("Team needs are updated after the pick for later selections.")
+    if market_context_lines:
+        log.extend(market_context_lines)
     return log
+
+
+# ---------------------------------------------------------------------------
+# Market context (Phase 5B-M1, decision_log only)
+# ---------------------------------------------------------------------------
+#
+# These helpers only feed decision_log. They DO NOT touch:
+#   * ranking_engine / final_score
+#   * selected_player
+#   * evaluate_trade_market / TradeEvaluation
+#   * trade action, probability, or rationale
+#   * any API response shape
+#
+# A signal only appears in decision_log for a given pick if it matches
+# the pick's team_abbr, pick_no, or the selected prospect's name.
+# Mismatched signals (e.g. an LAL rumor on a SAS pick) are filtered out.
+
+MARKET_CONTEXT_LIMIT = 3
+MARKET_CONTEXT_LABEL = "Market context:"
+_NEWS_KEYWORD_QUERY = "draft trade prospect workout pick"
+
+# Imports kept inside helpers to keep top-of-file imports stable.
+def _load_market_signals(db: Session, *, limit: int = 30) -> list[NewsSignal]:
+    """Read cached news from the database and convert them to
+    ``NewsSignal`` view objects. Pure read-only: no network, no
+    ``fetch_recent_articles`` call. Returns ``[]`` on any failure
+    (the simulation must never break because of an unrelated news
+    table problem).
+    """
+    try:
+        from app.services.news_service import search_articles
+
+        articles = search_articles(
+            db,
+            keyword=_NEWS_KEYWORD_QUERY,
+            limit=limit,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        return extract_signals(list(articles))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _signal_matches_pick(
+    signal: NewsSignal,
+    *,
+    team_abbr: str,
+    pick_no: int,
+    selected_prospect_name: str | None,
+) -> bool:
+    """A signal is considered relevant to a pick if at least one of
+    the following holds:
+
+    * ``signal.team_abbr`` equals the current pick's team abbr (or the
+      pick team's abbr is not known).
+    * ``signal.pick_no`` equals the current ``pick_no``.
+    * ``signal.prospect_name`` equals the selected prospect's name
+      (case-insensitive substring match — signals rarely have the
+      exact same string form as the DB-stored prospect name).
+
+    Signals with no team/pick/prospect context (``team_abbr`` and
+    ``pick_no`` and ``prospect_name`` all ``None``) are *never* shown
+    because they cannot be tied to a specific draft situation.
+    """
+    if signal.team_abbr and signal.team_abbr.upper() == (team_abbr or "").upper():
+        return True
+    if signal.pick_no is not None and signal.pick_no == pick_no:
+        return True
+    if (
+        signal.prospect_name
+        and selected_prospect_name
+        and signal.prospect_name.lower() in selected_prospect_name.lower()
+    ):
+        return True
+    return False
+
+
+def _format_market_line(signal: NewsSignal) -> str:
+    """Render a single signal as a short, non-prescriptive line.
+
+    The wording is intentionally *observational* ("recent cached news
+    links ...") rather than prescriptive ("system recommends ...").
+    """
+    confidence_pct = int(round(signal.confidence * 100))
+    parts: list[str] = []
+    if signal.team_abbr:
+        parts.append(signal.team_abbr)
+    intent_label = signal.intent.value.replace("_", " ")
+    parts.append(f"has a recent {intent_label} signal")
+    if signal.pick_no is not None:
+        parts.append(f"around pick #{signal.pick_no}")
+    summary = signal.summary
+    if summary:
+        snippet = summary if len(summary) <= 50 else summary[:47] + "..."
+        parts.append(f"({snippet})")
+    return (
+        f"{MARKET_CONTEXT_LABEL} "
+        + " ".join(parts)
+        + f" (confidence {confidence_pct}%)."
+    )
+
+
+def _market_context_lines_for_pick(
+    *,
+    signals: list[NewsSignal],
+    team_abbr: str,
+    pick_no: int,
+    selected_prospect_name: str | None = None,
+    limit: int = MARKET_CONTEXT_LIMIT,
+) -> list[str]:
+    """Filter the global signal list down to the subset that is
+    relevant to one pick, then return up to ``limit`` rendered lines.
+
+    The filter is team/pick/prospect based — see
+    :func:`_signal_matches_pick`. The input ``signals`` is assumed to
+    be sorted by ``-confidence`` (this is what
+    :func:`app.services.rumor_extractor.extract_signals` already
+    returns), so we keep the top ``limit`` matches in that order.
+    """
+    if not signals:
+        return []
+    matches = [
+        s for s in signals
+        if _signal_matches_pick(
+            s,
+            team_abbr=team_abbr,
+            pick_no=pick_no,
+            selected_prospect_name=selected_prospect_name,
+        )
+    ]
+    return [_format_market_line(s) for s in matches[:limit]]
