@@ -21,8 +21,10 @@ from app.models.draft import DraftOrder
 from app.models.prospect import Prospect
 from app.models.team import TeamNeed
 from app.services.simulation_service import (
-    TeamNeedSnapshot,
     adjust_team_need_after_pick,
+)
+from app.services.team_need_adjustment import (
+    TeamNeedSnapshot,
     clamp_need,
 )
 

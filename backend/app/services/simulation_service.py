@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Protocol
-
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -19,42 +16,17 @@ from app.schemas.simulation import (
 )
 from app.services.ranking_engine import rank_prospects
 from app.services.recommendation_service import to_ranked_read
+from app.services.team_need_adjustment import (
+    TeamNeedSnapshot,
+    adjust_team_need_after_pick,
+)
 from app.services.team_need_service import get_or_infer_team_need
 from app.services.rumor_extractor import NewsSignal, extract_signals
 
 
 # ---------------------------------------------------------------------------
-# Duck-typed contract for any object carrying the prospect attributes that
-# adjust_team_need_after_pick cares about.  Both the SQLAlchemy Prospect model
-# and the unit-test ProspectStub satisfy this Protocol structurally.
+# Helper: snapshot an ORM TeamNeed row into the in-memory TeamNeedSnapshot
 # ---------------------------------------------------------------------------
-
-
-class ProspectLike(Protocol):
-    position: Optional[str]
-    three_pct: Optional[float]
-    apg: Optional[float]
-    stocks: Optional[float]
-
-
-# ---------------------------------------------------------------------------
-# Lightweight copy of TeamNeed so we never mutate ORM objects in the session
-# ---------------------------------------------------------------------------
-
-@dataclass
-class TeamNeedSnapshot:
-    """In-memory copy of team needs for a single simulation run."""
-
-    team_id: int
-    year: int
-    need_pg: int = 5
-    need_sg: int = 5
-    need_sf: int = 5
-    need_pf: int = 5
-    need_c: int = 5
-    need_shooting: int = 6
-    need_defense: int = 6
-    need_creation: int = 6
 
 
 def _snapshot_from_orm(orm: TeamNeed) -> TeamNeedSnapshot:
@@ -70,55 +42,6 @@ def _snapshot_from_orm(orm: TeamNeed) -> TeamNeedSnapshot:
         need_defense=orm.need_defense,
         need_creation=orm.need_creation,
     )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def clamp_need(value: float | int) -> int:
-    """Clamp a need score to the valid range [1, 10]."""
-    return max(1, min(10, int(round(value))))
-
-
-def adjust_team_need_after_pick(team_need: TeamNeedSnapshot, prospect: object) -> None:
-    """Decrease position and skill needs after a team selects a prospect.
-
-    Position rules (decrease by 2 each):
-      - PG / G  -> need_pg
-      - SG / G  -> need_sg
-      - SF / F  -> need_sf
-      - PF / F  -> need_pf
-      - C       -> need_c
-
-    Skill rules (decrease by 1 each):
-      - three_pct >= 36  -> need_shooting
-      - apg >= 4         -> need_creation
-      - stocks >= 1.8    -> need_defense
-
-    All values are clamped to [1, 10].
-    """
-    pos = (prospect.position or "").upper()
-
-    # Position needs — decrease by 2
-    if "PG" in pos or pos == "G":
-        team_need.need_pg = clamp_need(team_need.need_pg - 2)
-    if "SG" in pos or pos == "G":
-        team_need.need_sg = clamp_need(team_need.need_sg - 2)
-    if "SF" in pos or pos == "F":
-        team_need.need_sf = clamp_need(team_need.need_sf - 2)
-    if "PF" in pos or pos == "F":
-        team_need.need_pf = clamp_need(team_need.need_pf - 2)
-    if "C" in pos:
-        team_need.need_c = clamp_need(team_need.need_c - 2)
-
-    # Skill needs — decrease by 1
-    if (prospect.three_pct or 0) >= 36:
-        team_need.need_shooting = clamp_need(team_need.need_shooting - 1)
-    if (prospect.apg or 0) >= 4:
-        team_need.need_creation = clamp_need(team_need.need_creation - 1)
-    if (prospect.stocks or 0) >= 1.8:
-        team_need.need_defense = clamp_need(team_need.need_defense - 1)
 
 
 # ---------------------------------------------------------------------------

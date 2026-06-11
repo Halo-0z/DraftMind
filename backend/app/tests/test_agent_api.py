@@ -51,12 +51,18 @@ def _force_mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_agent_ask_returns_mock_explanation(client: TestClient) -> None:
+    # Phase 6B-M1: pick=2 is SAS's first pick in the conftest seed
+    # (draft_order starts at pick_no=2).  At this pick, no prior
+    # board has consumed any prospect, so the available list still
+    # contains both seeded prospects (Mikel, Braylon).  The
+    # recommendation succeeds and AgentService can call the LLM
+    # mock to produce an explanation.
     response = client.post(
         "/api/agent/ask",
         json={
             "year": 2026,
             "team": "SAS",
-            "pick": 8,
+            "pick": 2,
             "question": "请解释这次推荐。",
         },
     )
@@ -72,12 +78,14 @@ def test_agent_ask_returns_mock_explanation(client: TestClient) -> None:
 
 
 def test_agent_answers_why_not_alternative(client: TestClient) -> None:
+    # Same pick=2 invariant as above: both Mikel and Braylon are
+    # still on the board so the follow-up question can name both.
     response = client.post(
         "/api/agent/ask",
         json={
             "year": 2026,
             "team": "SAS",
-            "pick": 8,
+            "pick": 2,
             "question": "为什么不选 Braylon Mullins？",
         },
     )
