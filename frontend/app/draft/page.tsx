@@ -1121,9 +1121,34 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                   <div className="mt-3 grid gap-3 text-sm leading-6 text-court-muted">
                     <p>{pick.trade_evaluation.rationale}</p>
                     <ul className="grid gap-2">
-                      {pick.decision_log.map((line) => (
-                        <li key={line}>{line}</li>
-                      ))}
+                      {pick.decision_log.map((line) => {
+                        // Phase 6A-B: a "Market context:" line is a
+                        // *read-only* observation, not a GM decision
+                        // input.  Visually separate it so the reader
+                        // doesn't mistake cached news for a ranking
+                        // / trade nudge.  Detection is purely on the
+                        // "Market context:" prefix written by
+                        // simulation_service._format_market_line().
+                        const isMarketContext = line.startsWith(
+                          "Market context:",
+                        );
+                        if (isMarketContext) {
+                          return (
+                            <li
+                              key={line}
+                              className="flex items-start gap-2 border-l-2 border-amber-300/40 bg-amber-300/[0.05] py-1 pl-3 pr-2"
+                            >
+                              <span className="mt-0.5 inline-block shrink-0 rounded border border-amber-300/40 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-bold text-amber-200">
+                                只读市场上下文
+                              </span>
+                              <span className="text-court-muted/90">
+                                {line}
+                              </span>
+                            </li>
+                          );
+                        }
+                        return <li key={line}>{line}</li>;
+                      })}
                     </ul>
                     <p>
                       Live board:{" "}
