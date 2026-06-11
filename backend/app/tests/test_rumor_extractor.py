@@ -154,6 +154,103 @@ def test_chinese_workout_identified():
 
 
 # ---------------------------------------------------------------------------
+# Phase 6A-C: Chinese coverage hardening.
+#
+# These tests are *additive* — they only assert behaviour the
+# extractor already has.  See ``INTENT_KEYWORDS`` in
+# ``app/services/rumor_extractor.py`` for the actual whitelisted
+# Chinese terms.  The current whitelist is:
+#   trade_up   : "向上交易", "换取签位"
+#   trade_down : "向下交易", "出售签位"
+#   workout    : "试训", "面试"
+#   draft_pref : "有意", "青睐", "看中"
+#   rise       : "行情上涨"
+#   fall       : "行情下滑"
+#   game_noise : "比赛集锦", "赛后采访"
+#   INTENT_PRIORITY: DRAFT_PREFERENCE < WORKOUT < TRADE_UP
+#                    < TRADE_DOWN < RISE < FALL
+# ---------------------------------------------------------------------------
+
+
+def test_chinese_trade_down_identified():
+    """`向下交易` and `出售签位` are the two whitelisted trade_down
+    markers; we test both via parametrize below.  This single
+    happy-path mirrors the existing Chinese trade_up test.
+    """
+    art = _article(
+        title="[流言] 火箭考虑向下交易签位换取未来资产",
+        team_abbrs="HOU",
+        source="Hupu Voice",
+    )
+    out = extract_signals([art])
+    assert len(out) == 1
+    assert out[0].intent is RumorIntent.TRADE_DOWN
+    assert out[0].team_abbr == "HOU"
+
+
+def test_chinese_rise_identified():
+    art = _article(
+        title="[流言] 状元行情上涨，Bulldogs 持续走高",
+        prospect_names="VJ Edgecombe",
+        source="Hupu Voice",
+    )
+    out = extract_signals([art])
+    assert len(out) == 1
+    assert out[0].intent is RumorIntent.RISE
+    assert out[0].prospect_name == "VJ Edgecombe"
+
+
+def test_chinese_fall_identified():
+    art = _article(
+        title="[流言] Ace Bailey 行情下滑 跌出前五",
+        prospect_names="Ace Bailey",
+        source="Hupu Voice",
+    )
+    out = extract_signals([art])
+    assert len(out) == 1
+    assert out[0].intent is RumorIntent.FALL
+    assert out[0].prospect_name == "Ace Bailey"
+
+
+@pytest.mark.parametrize("title,team_abbr,prospect", [
+    ("[流言] 凯尔特人有意 Dylan Harper", "BOS", "Dylan Harper"),
+    ("[流言] 湖人青睐新秀 Cooper Flagg", "LAL", "Cooper Flagg"),
+    ("[流言] 马刺看中新秀 VJ Edgecombe", "SAS", "VJ Edgecombe"),
+])
+def test_chinese_draft_preference_identified(title, team_abbr, prospect):
+    art = _article(
+        title=title,
+        team_abbrs=team_abbr,
+        prospect_names=prospect,
+        source="Hupu Voice",
+    )
+    out = extract_signals([art])
+    assert len(out) == 1
+    assert out[0].intent is RumorIntent.DRAFT_PREFERENCE
+    assert out[0].team_abbr == team_abbr
+    assert out[0].prospect_name == prospect
+
+
+def test_chinese_fall_priority_over_workout():
+    """中文标题同时含 `试训` (WORKOUT) 和 `行情下滑` (FALL).
+
+    INTENT_PRIORITY must let FALL win — same contract as the English
+    `test_sliding_stock_identified` test.  This is the regression
+    net for "Chinese fall 标签和试训 标签混在一起时不能错判 WORKOUT".
+    """
+    art = _article(
+        title="[流言] Cooper Flagg 试训不佳 行情下滑",
+        team_abbrs="LAL",
+        prospect_names="Cooper Flagg",
+        source="Hupu Voice",
+    )
+    out = extract_signals([art])
+    assert len(out) == 1
+    assert out[0].intent is RumorIntent.FALL
+    assert out[0].prospect_name == "Cooper Flagg"
+
+
+# ---------------------------------------------------------------------------
 # 10-12. Game news must not produce signals
 # ---------------------------------------------------------------------------
 
@@ -298,6 +395,55 @@ def test_confidence_floor_filters_low_quality():
 
 def test_confidence_floor_constant_is_set():
     assert CONFIDENCE_FLOOR == 0.30
+
+
+# ---------------------------------------------------------------------------
+# Phase 6A-C: more Chinese game-news variants + Chinese low-quality
+# decay.  These are additive — they don't touch the English-only or
+# existing Chinese tests above.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("title", [
+    # Both whitelisted GAME_NOISE_PATTERNS ("比赛集锦", "赛后采访") in
+    # different positional contexts — beginning, middle, end of the
+    # title — to catch any "startswith" / "endswith" mistakes.
+    "[流言板] 比赛集锦：湖人 vs 勇士 112-108",
+    "[流言] 赛后采访：詹姆斯谈球队表现",
+    "[流言板] 今日五佳球 比赛集锦三连击",
+])
+def test_extra_chinese_game_news_does_not_produce_signal(title):
+    art = _article(
+        title=title,
+        team_abbrs="LAL",
+        source="Hupu Voice",
+    )
+    out = extract_signals([art])
+    assert out == [], f"game-news article should not produce signal: {title!r}"
+
+
+def test_chinese_low_authority_old_signal_dropped_below_floor():
+    """Mirror of ``test_low_authority_72h_signal_dropped_below_floor``
+    for the Chinese source pathway.
+
+    Hupu Voice authority 0.6 × 14d recency 0.0 = 0.0 < 0.30 floor →
+    dropped.  This is the regression net for "中文流言 + 旧 + 低权威"
+    should not sneak into the market context.
+    """
+    art = _article(
+        # 向上交易 hits trade_up whitelist, so intent classification
+        # *would* produce a signal — but confidence arithmetic must
+        # still drop it.
+        title="[流言] 马刺有意向上交易选秀权换取签位",
+        team_abbrs="SAS",
+        source="Hupu Voice",  # lower authority
+        published_at=_now() - timedelta(days=14),  # 14d+ recency
+    )
+    out = extract_signals([art])
+    assert out == [], (
+        f"14d-old Hupu Voice signal should drop below 0.30 floor, "
+        f"got: {out}"
+    )
 
 
 # ---------------------------------------------------------------------------
