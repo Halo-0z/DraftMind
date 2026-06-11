@@ -60,7 +60,7 @@ def test_extract_signals_empty_returns_empty():
 
 def test_english_trade_up_identified():
     art = _article(
-        title="Lakers looking to trade up in the 2026 NBA Draft",
+        title="Lakers looking to trade up for the No. 5 pick in the 2026 NBA Draft",
         team_abbrs="LAL",
     )
     out = extract_signals([art])
@@ -82,7 +82,7 @@ def test_english_trade_down_identified():
 
 def test_english_workout_identified():
     art = _article(
-        title="Cooper Flagg schedules workout with the Spurs",
+        title="Cooper Flagg schedules pre-draft workout with the Spurs",
         team_abbrs="SAS",
         prospect_names="Cooper Flagg",
     )
@@ -94,7 +94,7 @@ def test_english_workout_identified():
 
 def test_draft_preference_identified():
     art = _article(
-        title="Mavericks reportedly high on Dylan Harper ahead of the draft",
+        title="Mavericks reportedly high on Dylan Harper at No. 5 ahead of the draft",
         team_abbrs="DAL",
         prospect_names="Dylan Harper",
     )
@@ -107,7 +107,7 @@ def test_draft_preference_identified():
 
 def test_rising_stock_identified():
     art = _article(
-        title="VJ Edgecombe stock rising in latest 2026 mock drafts",
+        title="VJ Edgecombe draft stock rising in latest 2026 mock drafts",
         prospect_names="VJ Edgecombe",
     )
     out = extract_signals([art])
@@ -131,7 +131,7 @@ def test_sliding_stock_identified():
 
 def test_chinese_trade_up_identified():
     art = _article(
-        title="[流言] 马刺有意向上交易选秀权换取签位",
+        title="[流言] 马刺考虑向上交易换取5号签",
         team_abbrs="SAS",
         source="Hupu Voice",
     )
@@ -143,7 +143,7 @@ def test_chinese_trade_up_identified():
 
 def test_chinese_workout_identified():
     art = _article(
-        title="[流言板] 状元热门 Cooper Flagg 前往湖人试训",
+        title="[流言板] 新秀 Cooper Flagg 前往湖人试训",
         source="Hupu Voice",
         team_abbrs="LAL",
         prospect_names="Cooper Flagg",
@@ -178,7 +178,7 @@ def test_chinese_trade_down_identified():
     happy-path mirrors the existing Chinese trade_up test.
     """
     art = _article(
-        title="[流言] 火箭考虑向下交易签位换取未来资产",
+        title="[流言] 火箭考虑向下交易出售14号签换取未来资产",
         team_abbrs="HOU",
         source="Hupu Voice",
     )
@@ -190,7 +190,7 @@ def test_chinese_trade_down_identified():
 
 def test_chinese_rise_identified():
     art = _article(
-        title="[流言] 状元行情上涨，Bulldogs 持续走高",
+        title="[流言] Dybantsa 选秀行情上涨，Bulldogs 持续走高",
         prospect_names="VJ Edgecombe",
         source="Hupu Voice",
     )
@@ -213,9 +213,9 @@ def test_chinese_fall_identified():
 
 
 @pytest.mark.parametrize("title,team_abbr,prospect", [
-    ("[流言] 凯尔特人有意 Dylan Harper", "BOS", "Dylan Harper"),
-    ("[流言] 湖人青睐新秀 Cooper Flagg", "LAL", "Cooper Flagg"),
-    ("[流言] 马刺看中新秀 VJ Edgecombe", "SAS", "VJ Edgecombe"),
+    ("[流言] 凯尔特人有意在14号签选择 Dylan Harper", "BOS", "Dylan Harper"),
+    ("[流言] 湖人青睐新秀 Cooper Flagg 作为选秀目标", "LAL", "Cooper Flagg"),
+    ("[流言] 马刺看中新秀 VJ Edgecombe 作为选秀目标", "SAS", "VJ Edgecombe"),
 ])
 def test_chinese_draft_preference_identified(title, team_abbr, prospect):
     art = _article(
@@ -271,6 +271,150 @@ def test_game_news_does_not_produce_signal(title):
 
 
 # ---------------------------------------------------------------------------
+# Phase 6C-M1. Strict draft-decision signal filter:
+# ordinary NBA transaction / game / betting / fantasy news must stay
+# out of NewsSignal even if it contains broad words like "interested in",
+# "open to dealing", "rising", or "有意".
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("title,source,team_abbrs,prospects", [
+    ("Lakers interested in veteran guard after injury report", "ESPN NBA News", "LAL", ""),
+    ("Warriors open to dealing veteran wing before deadline", "ESPN NBA News", "GSW", ""),
+    ("Suns may trade star forward this offseason", "ESPN NBA News", "PHX", ""),
+    ("Team signs free agent center", "Sportando NBA", "", ""),
+    ("Player agrees to contract extension", "Sportando NBA", "", ""),
+    ("NBA Trade Tracker: Team acquires veteran guard", "NBA Trade Tracker", "", ""),
+    ("Celtics rising in power rankings after win", "ESPN NBA News", "BOS", ""),
+    ("Prospect drops 30 points in college win", "ESPN CBB Draft", "", "Dybantsa"),
+    ("2026 NBA Draft odds: who is favored to go No. 1", "ESPN NBA News", "", ""),
+    ("Fantasy basketball: rookies to target this season", "ESPN NBA News", "", ""),
+    ("Postgame recap: coach praises young prospect", "ESPN NBA News", "", "Dybantsa"),
+    ("湖人有意得到老将控卫", "Hupu Voice", "LAL", ""),
+    ("勇士考虑交易老将侧翼", "Hupu Voice", "GSW", ""),
+    ("太阳可能交易明星前锋", "Hupu Voice", "PHX", ""),
+    ("球队签下自由球员中锋", "Hupu Voice", "", ""),
+    ("球员完成续约", "Hupu Voice", "", ""),
+    ("凯尔特人战绩排名继续上涨", "Hupu Voice", "BOS", ""),
+    ("某新秀砍下30分带队取胜", "Hupu Voice", "", "Dybantsa"),
+    ("2026年选秀赔率更新", "Hupu Voice", "", ""),
+    ("今日五佳球：比赛集锦", "Hupu Voice", "", ""),
+    ("伤病报告：球队更新轮换", "Hupu Voice", "", ""),
+    ("赛后采访：主教练谈年轻球员表现", "Hupu Voice", "", ""),
+])
+def test_ordinary_transaction_and_noise_news_do_not_produce_signal(
+    title, source, team_abbrs, prospects,
+):
+    art = _article(
+        title=title,
+        source=source,
+        team_abbrs=team_abbrs,
+        prospect_names=prospects,
+    )
+    out = extract_signals([art])
+    assert out == [], f"ordinary NBA news should not produce signal: {title!r}"
+
+
+@pytest.mark.parametrize("title,source,team_abbrs,prospects,expected", [
+    (
+        "Lakers hosted Cooper Flagg for a pre-draft workout",
+        "ESPN NBA News",
+        "LAL",
+        "Cooper Flagg",
+        RumorIntent.WORKOUT,
+    ),
+    (
+        "Hornets linked to Chris Cenac Jr. at No. 14 in the draft",
+        "ESPN NBA News",
+        "CHA",
+        "Chris Cenac Jr.",
+        RumorIntent.DRAFT_PREFERENCE,
+    ),
+    (
+        "Jazz looking to trade up for the No. 5 pick",
+        "ESPN NBA News",
+        "UTA",
+        "",
+        RumorIntent.TRADE_UP,
+    ),
+    (
+        "Raptors open to trading down from No. 14",
+        "ESPN NBA News",
+        "TOR",
+        "",
+        RumorIntent.TRADE_DOWN,
+    ),
+    (
+        "Dybantsa's draft stock is rising after combine measurements",
+        "ESPN CBB Draft",
+        "",
+        "Dybantsa",
+        RumorIntent.RISE,
+    ),
+    (
+        "Ace Bailey sliding down draft boards after poor workout",
+        "ESPN CBB Draft",
+        "",
+        "Ace Bailey",
+        RumorIntent.FALL,
+    ),
+    (
+        "湖人试训新秀 Cooper Flagg",
+        "Hupu Voice",
+        "LAL",
+        "Cooper Flagg",
+        RumorIntent.WORKOUT,
+    ),
+    (
+        "黄蜂有意在14号签选择 Chris Cenac Jr.",
+        "Hupu Voice",
+        "CHA",
+        "Chris Cenac Jr.",
+        RumorIntent.DRAFT_PREFERENCE,
+    ),
+    (
+        "爵士考虑向上交易换取5号签",
+        "Hupu Voice",
+        "UTA",
+        "",
+        RumorIntent.TRADE_UP,
+    ),
+    (
+        "猛龙考虑向下交易出售14号签",
+        "Hupu Voice",
+        "TOR",
+        "",
+        RumorIntent.TRADE_DOWN,
+    ),
+    (
+        "Dybantsa 选秀行情上涨",
+        "Hupu Voice",
+        "",
+        "Dybantsa",
+        RumorIntent.RISE,
+    ),
+    (
+        "Ace Bailey 选秀行情下滑",
+        "Hupu Voice",
+        "",
+        "Ace Bailey",
+        RumorIntent.FALL,
+    ),
+])
+def test_strict_draft_decision_signals_still_produce_expected_intent(
+    title, source, team_abbrs, prospects, expected,
+):
+    art = _article(
+        title=title,
+        source=source,
+        team_abbrs=team_abbrs,
+        prospect_names=prospects,
+    )
+    out = extract_signals([art])
+    assert len(out) == 1
+    assert out[0].intent is expected
+
+
+# ---------------------------------------------------------------------------
 # 13. Recency decay
 # ---------------------------------------------------------------------------
 
@@ -283,12 +427,12 @@ def test_old_article_confidence_decays():
     # the product drops to 0.28, which the floor filters out — that
     # is the intended behavior for a low-context old rumor.
     fresh = _article(
-        title="Lakers looking to trade up",
+        title="Lakers looking to trade up for the No. 5 pick",
         team_abbrs="LAL",
         prospect_names="Cooper Flagg",
     )
     ancient = _article(
-        title="Lakers looking to trade up",
+        title="Lakers looking to trade up for the No. 5 pick",
         team_abbrs="LAL",
         prospect_names="Cooper Flagg",
         published_at=_now() - timedelta(hours=72),
@@ -332,7 +476,7 @@ def test_very_old_signal_dropped_below_floor():
 
 def test_unknown_published_at_does_not_crash():
     art = _article(
-        title="Lakers looking to trade up",
+        title="Lakers looking to trade up for the No. 5 pick",
         team_abbrs="LAL",
         published_at=None,
     )
@@ -344,7 +488,7 @@ def test_unknown_published_at_does_not_crash():
 
 def test_published_at_as_string_does_not_crash():
     art = _article(
-        title="Lakers looking to trade up",
+        title="Lakers looking to trade up for the No. 5 pick",
         team_abbrs="LAL",
         published_at="2026-06-09T12:34:56",
     )
@@ -359,12 +503,12 @@ def test_published_at_as_string_does_not_crash():
 
 def test_source_authority_affects_confidence():
     espn = _article(
-        title="Lakers looking to trade up",
+        title="Lakers looking to trade up for the No. 5 pick",
         team_abbrs="LAL",
         source="ESPN NBA News",
     )
     random_blog = _article(
-        title="Lakers looking to trade up",
+        title="Lakers looking to trade up for the No. 5 pick",
         team_abbrs="LAL",
         source="random-blog.example.com",
     )
@@ -452,8 +596,9 @@ def test_chinese_low_authority_old_signal_dropped_below_floor():
 
 def test_team_abbrs_field_preferred():
     art = _article(
-        title="A team is interested in moving up",  # ambiguous
+        title="A team is linked to Cooper Flagg at No. 5 in the draft",
         team_abbrs="BOS, NYK",
+        prospect_names="Cooper Flagg",
     )
     out = extract_signals([art])
     assert len(out) == 1
@@ -463,7 +608,7 @@ def test_team_abbrs_field_preferred():
 
 def test_prospect_names_field_used():
     art = _article(
-        title="A prospect is rising up boards",  # no name in title
+        title="A prospect's draft stock is rising up boards",  # no name in title
         team_abbrs="SAS",
         prospect_names="Dylan Harper, VJ Edgecombe",
     )
@@ -478,13 +623,13 @@ def test_prospect_names_field_used():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("title,expected", [
-    ("Lakers linked to the No. 2 pick", 2),
-    ("Spurs high on prospect at #5 in the draft", 5),
+    ("Lakers linked to Cooper Flagg at the No. 2 pick in the draft", 2),
+    ("Spurs high on Cooper Flagg at #5 in the draft", 5),
     ("Jazz looking to move up for the 3rd pick", 3),
     ("Raptors willing to move back from the No. 14 pick", 14),
 ])
 def test_pick_no_extraction(title, expected):
-    art = _article(title=title, team_abbrs="LAL")
+    art = _article(title=title, team_abbrs="LAL", prospect_names="Cooper Flagg")
     out = extract_signals([art])
     assert len(out) == 1
     assert out[0].pick_no == expected
@@ -495,8 +640,9 @@ def test_pick_no_out_of_range_ignored():
     # a signal at all, and the embedded pick number is out of the 1-60
     # range. We expect the signal to exist but with pick_no=None.
     art = _article(
-        title="Lakers linked to the No. 99 pick",  # out of range
+        title="Lakers linked to Cooper Flagg at the No. 99 pick in the draft",
         team_abbrs="LAL",
+        prospect_names="Cooper Flagg",
     )
     out = extract_signals([art])
     assert len(out) == 1
@@ -509,12 +655,12 @@ def test_pick_no_out_of_range_ignored():
 
 def test_signals_sorted_by_confidence_desc():
     high = _article(
-        title="Lakers looking to trade up",
+        title="Lakers looking to trade up for the No. 5 pick",
         team_abbrs="LAL",
         source="ESPN NBA News",
     )
     low = _article(
-        title="trade up is all the rage",
+        title="BOS looking to trade up for the No. 8 pick",
         team_abbrs="BOS",
         source="random-blog.example.com",
     )
@@ -572,7 +718,7 @@ def test_merge_duplicate_signals_no_op_on_distinct_signals():
 def test_extract_signals_accepts_dict_articles():
     art = {
         "source": "ESPN NBA News",
-        "title": "Lakers looking to trade up",
+        "title": "Lakers looking to trade up for the No. 5 pick",
         "summary": "",
         "url": "https://example.com/1",
         "published_at": _now(),

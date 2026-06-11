@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+import re
 from typing import Any, Iterable, Sequence
 
 
@@ -77,11 +78,11 @@ def _recency_factor(age_hours: float | None) -> float:
 #: ordering of buckets is fixed (see ``_classify_intent``).
 INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
     "trade_up": (
-        "trade up", "move up", "moving up",
+        "trade up", "trading up", "move up", "moving up",
         "acquire pick", "向上交易", "换取签位",
     ),
     "trade_down": (
-        "trade down", "move back", "moving back",
+        "trade down", "trading down", "move back", "moving back",
         "shop the pick", "open to dealing",
         "向下交易", "出售签位",
     ),
@@ -113,12 +114,112 @@ GAME_NOISE_PATTERNS: tuple[str, ...] = (
     "how to watch",
     "halftime",
     "injury recap",
+    "injury report",
     "game preview",
     "final score",
     "player scores",
     "highlights",
+    "postgame",
+    "recap",
+    "power rankings",
+    "betting",
+    "odds",
+    "fantasy",
     "比赛集锦",
     "赛后采访",
+    "赛后",
+    "今日五佳球",
+    "五佳球",
+    "伤病报告",
+    "赔率",
+    "战绩排名",
+    "带队取胜",
+)
+
+
+#: Terms that make an otherwise broad phrase ("interested in",
+#: "linked to", "rising") about the draft decision, not generic NBA
+#: transactions. This is deliberately conservative: normal NBA trade,
+#: free-agent, injury, and game articles may still be shown in the news
+#: list, but they should not become DraftMind NewsSignal entries.
+DRAFT_CONTEXT_PATTERNS: tuple[str, ...] = (
+    "draft",
+    "pre-draft",
+    "predraft",
+    "mock draft",
+    "draft board",
+    "draft boards",
+    "big board",
+    "prospect",
+    "combine",
+    "pro day",
+    "measurement",
+    "measurements",
+    "medical",
+    "pick",
+    "选秀",
+    "新秀",
+    "签位",
+    "号签",
+    "顺位",
+    "行情",
+    "试训",
+    "面试",
+    "联合试训",
+    "体测",
+)
+
+
+#: Stricter stock context. Generic "rising", "falling", "climbing",
+#: or "dropping" is not enough; it must describe draft stock / board
+#: movement or draft-relevant evaluation events.
+DRAFT_STOCK_CONTEXT_PATTERNS: tuple[str, ...] = (
+    "draft stock",
+    "stock rising",
+    "stock falling",
+    "draft board",
+    "draft boards",
+    "big board",
+    "mock draft",
+    "combine",
+    "pro day",
+    "measurement",
+    "measurements",
+    "medical",
+    "poor workout",
+    "选秀行情",
+    "行情上涨",
+    "行情下滑",
+    "选秀顺位",
+)
+
+
+#: Generic NBA transaction terms. These are not absolute rejects: a
+#: veteran trade that explicitly acquires a draft pick can still pass
+#: through the draft-context gates. Without draft context, however, this
+#: is ordinary NBA transaction news and should not become a signal.
+TRANSACTION_NOISE_PATTERNS: tuple[str, ...] = (
+    "veteran",
+    "free agent",
+    "contract extension",
+    "agrees to contract",
+    "signs",
+    "signed",
+    "waive",
+    "waived",
+    "buyout",
+    "acquires veteran",
+    "acquired veteran",
+    "star forward",
+    "injury report",
+    "老将",
+    "自由球员",
+    "续约",
+    "签下",
+    "裁员",
+    "买断",
+    "明星前锋",
+    "伤病报告",
 )
 
 
@@ -229,6 +330,70 @@ def _is_game_noise(haystack_lower: str) -> bool:
     return any(pat in haystack_lower for pat in GAME_NOISE_PATTERNS)
 
 
+def _contains_any(haystack_lower: str, patterns: Iterable[str]) -> bool:
+    return any(pattern in haystack_lower for pattern in patterns)
+
+
+def _has_transaction_noise(haystack_lower: str) -> bool:
+    return _contains_any(haystack_lower, TRANSACTION_NOISE_PATTERNS)
+
+
+def _has_pick_context(haystack_lower: str) -> bool:
+    return _pick_pick_no(None, haystack_lower) is not None
+
+
+def _has_draft_context(haystack_lower: str) -> bool:
+    return _contains_any(haystack_lower, DRAFT_CONTEXT_PATTERNS) or _has_pick_context(
+        haystack_lower
+    )
+
+
+def _has_draft_stock_context(haystack_lower: str) -> bool:
+    return _contains_any(haystack_lower, DRAFT_STOCK_CONTEXT_PATTERNS)
+
+
+def _passes_draft_decision_gate(
+    *,
+    intent: RumorIntent,
+    haystack_lower: str,
+    team: str | None,
+    prospect: str | None,
+    pick_no: int | None,
+) -> bool:
+    """Keep NewsSignal narrowly scoped to draft-decision context.
+
+    NewsService may cache ordinary NBA transaction articles for the UI,
+    but simulation Market context should only receive draft-decision
+    signals. Broad words like "interested in", "open to dealing", or
+    "rising" therefore need entity anchors and draft context.
+    """
+    has_team = team is not None
+    has_prospect = prospect is not None
+    has_pick = pick_no is not None or _has_pick_context(haystack_lower)
+    has_draft = _has_draft_context(haystack_lower)
+    has_stock = _has_draft_stock_context(haystack_lower)
+
+    if _has_transaction_noise(haystack_lower) and not has_draft:
+        return False
+
+    if intent is RumorIntent.DRAFT_PREFERENCE:
+        return has_prospect and (has_team or has_pick) and has_draft
+
+    if intent is RumorIntent.WORKOUT:
+        return has_prospect and has_team and has_draft
+
+    if intent is RumorIntent.TRADE_UP:
+        return has_team and has_draft and (has_pick or has_prospect)
+
+    if intent is RumorIntent.TRADE_DOWN:
+        return has_team and has_draft and has_pick
+
+    if intent in (RumorIntent.RISE, RumorIntent.FALL):
+        return has_prospect and has_stock
+
+    return False
+
+
 def _pick_team(article: Any, haystack_lower: str) -> str | None:
     """Prefer the structured ``team_abbrs`` field; fall back to scanning
     the haystack for known abbr tokens."""
@@ -258,14 +423,14 @@ _PICK_NO_PATTERNS: tuple[str, ...] = (
     r"no\.\s*(\d{1,2})\b",
     r"pick\s*no\.\s*(\d{1,2})\b",
     r"(\d{1,2})(?:st|nd|rd|th)\s+pick\b",
+    r"(\d{1,2})\s*号签",
+    r"第\s*(\d{1,2})\s*顺位",
 )
 
 
 def _pick_pick_no(article: Any, haystack_lower: str) -> int | None:
     """Search for a draft-pick number in the haystack. Returns the first
     hit, if any, in the 1-60 range."""
-    import re
-
     candidates: list[int] = []
     for pat in _PICK_NO_PATTERNS:
         for m in re.finditer(pat, haystack_lower):
@@ -411,6 +576,14 @@ def _signal_from_article(
     team = _pick_team(article, haystack_lower)
     prospect = _pick_prospect(article)
     pick_no = _pick_pick_no(article, haystack_lower)
+    if not _passes_draft_decision_gate(
+        intent=intent,
+        haystack_lower=haystack_lower,
+        team=team,
+        prospect=prospect,
+        pick_no=pick_no,
+    ):
+        return None
     age = _age_hours(article, now=now)
 
     confidence = _confidence_for(

@@ -10,6 +10,8 @@ Covers:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -830,6 +832,25 @@ def _make_signal(
     )
 
 
+def _make_article(
+    *,
+    title: str,
+    source: str = "ESPN NBA News",
+    team_abbrs: str = "",
+    prospect_names: str = "",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        source=source,
+        title=title,
+        summary="",
+        url=f"https://example.com/news/{abs(hash(title))}",
+        published_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        prospect_names=prospect_names,
+        team_abbrs=team_abbrs,
+        body_excerpt="",
+    )
+
+
 class TestMarketContextInDecisionLog:
     """Phase 5B-M1: NewsSignal only feeds decision_log."""
 
@@ -949,6 +970,102 @@ class TestMarketContextInDecisionLog:
             assert market_lines == [], (
                 f"unexpected market context in pick {pick['pick']}: {market_lines}"
             )
+
+    def test_ordinary_transaction_articles_do_not_become_market_context(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """Ordinary NBA transaction articles may exist in the news cache,
+        but the real extractor should reject them before decision_log.
+        """
+        db_session.commit()
+        ordinary_articles = [
+            _make_article(
+                title="Lakers interested in veteran guard after injury report",
+                team_abbrs="LAL",
+            ),
+            _make_article(
+                title="湖人有意得到老将控卫",
+                source="Hupu Voice",
+                team_abbrs="LAL",
+            ),
+        ]
+        with patch(
+            "app.services.news_service.search_articles",
+            return_value=ordinary_articles,
+        ):
+            response = client.post(
+                "/api/simulate",
+                json={
+                    "year": 2026,
+                    "rounds": 1,
+                    "limit": 2,
+                    "evaluate_trades": False,
+                },
+            )
+        assert response.status_code == 200, response.text
+        for pick in response.json()["picks"]:
+            market_lines = [
+                line for line in pick["decision_log"]
+                if line.startswith("Market context:")
+            ]
+            assert market_lines == [], (
+                f"ordinary transaction article leaked into pick "
+                f"{pick['pick']} ({pick['team']['abbr']}): {market_lines}"
+            )
+
+    def test_true_draft_article_can_become_market_context(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """A strict draft-decision article should still become a
+        NewsSignal and surface on the matching pick.
+        """
+        db_session.commit()
+        dry_resp = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 1,
+                "limit": 2,
+                "evaluate_trades": False,
+            },
+        )
+        assert dry_resp.status_code == 200, dry_resp.text
+        target = dry_resp.json()["picks"][0]
+        target_pick_no = target["pick"]
+        target_team = target["team"]["abbr"]
+
+        draft_article = _make_article(
+            title=(
+                f"{target_team} looking to trade up for the "
+                f"No. {target_pick_no} pick in the draft"
+            ),
+            team_abbrs=target_team,
+        )
+        with patch(
+            "app.services.news_service.search_articles",
+            return_value=[draft_article],
+        ):
+            response = client.post(
+                "/api/simulate",
+                json={
+                    "year": 2026,
+                    "rounds": 1,
+                    "limit": 2,
+                    "evaluate_trades": False,
+                },
+            )
+        assert response.status_code == 200, response.text
+        target_pick = next(
+            p for p in response.json()["picks"] if p["pick"] == target_pick_no
+        )
+        market_lines = [
+            line for line in target_pick["decision_log"]
+            if line.startswith("Market context:")
+        ]
+        assert market_lines, (
+            f"strict draft-decision article did not surface for "
+            f"{target_team} pick #{target_pick_no}: {target_pick['decision_log']}"
+        )
 
     def test_market_context_does_not_change_selected_player(
         self, client: TestClient, db_session: Session,
