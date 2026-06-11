@@ -36,6 +36,7 @@ def list_news(
         keyword=keyword,
         language=language,
         limit=limit,
+        draftmind_only=True,
     )
     return NewsSearchResponse(
         query=prospect or team or keyword or "",
@@ -59,7 +60,7 @@ def refresh_news(
         import logging
         logging.getLogger(__name__).warning("news refresh outer failure: %s", exc)
         articles = []
-    found = search_articles(db, limit=limit)
+    found = search_articles(db, limit=limit, draftmind_only=True)
     return NewsSearchResponse(
         query="",
         total=len(found),

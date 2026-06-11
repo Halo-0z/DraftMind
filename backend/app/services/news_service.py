@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import logging
 import re
 from typing import Iterable, Protocol
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -110,6 +111,40 @@ TEAM_CN_HINTS: dict[str, str] = {
     "奇才": "WAS", "老鹰": "ATL", "黄蜂": "CHA", "步行者": "IND",
     "活塞": "DET", "开拓者": "POR", "骑士": "CLE",
 }
+
+
+HUPU_DRAFT_CONTEXT_KEYWORDS = [
+    "选秀", "新秀", "签位", "号签", "试训", "行情", "乐透",
+    "mock", "draft", "prospect", "pick", "workout", "combine",
+]
+
+HUPU_TOPIC_KEYWORDS = [
+    "交易", "签约", "裁员", "买断", "自由球员", "选秀", "新秀",
+    "合同", "续约", "报价", "有意", "询价", "追求", "离开", "加盟",
+    "签位", "号签", "试训", "行情",
+]
+
+HUPU_NOISE_KEYWORDS = [
+    "今日曼巴篮球数据方向", "怎么找篮球组队", "历史前十球员排名",
+    "今日五佳球", "比赛集锦", "赛后采访", "伤病报告",
+]
+
+DRAFTMIND_NEWS_CONTEXT_KEYWORDS = [
+    "draft", "mock draft", "prospect", "rookie", "lottery", "combine",
+    "pre-draft", "predraft", "workout", "draft board", "draft stock",
+    "measurement", "measurements", "pro day",
+    "选秀", "新秀", "签位", "号签", "乐透", "试训", "行情", "联合试训", "体测",
+]
+
+DRAFTMIND_NEWS_NOISE_KEYWORDS = [
+    "nba finals", "finals game", "game 4", "playoffs", "comeback", "collapse",
+    "box score", "recap", "postgame", "highlights", "schedule",
+    "how to watch", "fantasy", "dfs", "betting", "odds",
+    "power ranking", "championship odds", "nba title", "long-awaited title",
+    "title race", "championship",
+    "历史排名", "历史前十", "组队", "篮球数据方向", "今日五佳球",
+    "比赛集锦", "赛后采访", "普通伤病报告", "伤病报告",
+]
 
 
 class _Fetcher(Protocol):
@@ -434,32 +469,22 @@ def _fetch_hupu_voice(source: dict[str, str], session: requests.Session) -> list
     out: list[dict] = []
     seen_urls: set[str] = set()
 
-    # voice.hupu.com uses list items with links to news articles
-    # Articles are typically under <a> tags with href containing /bbs/ or /nba/
-    for a in soup.select("a[href]"):
-        href = a.get("href", "")
-        title = a.get_text(strip=True)
-        if not href or not title or len(title) < 8 or len(title) > 200:
-            continue
-        # Only keep [流言板] articles — these are authoritative news
-        if "[流言板]" not in title and "流言板" not in title:
-            continue
-        combined = title.lower()
-        # Must be trade/draft/offseason related
-        trade_cn = ["交易", "签约", "裁员", "买断", "自由球员", "选秀", "新秀",
-                     "合同", "续约", "报价", "有意", "询价", "追求", "离开", "加盟"]
-        if not any(kw in combined for kw in trade_cn):
-            continue
-        if href.startswith("/"):
-            href = f"https://voice.hupu.com{href}"
-        elif not href.startswith("http"):
-            continue
-        if href in seen_urls:
-            continue
-        seen_urls.add(href)
-        # Try to extract date from nearby text
+    def _append_item(href: str, title: str, parent) -> None:
+        normalized_url = _normalize_hupu_url(href)
+        if normalized_url is None:
+            return
+        title = title.strip()
+        if (
+            not title
+            or len(title) < 8
+            or len(title) > 200
+            or not _should_keep_hupu_link(normalized_url, title)
+            or normalized_url in seen_urls
+        ):
+            return
+        seen_urls.add(normalized_url)
+
         published_at = datetime.utcnow()
-        parent = a.find_parent()
         if parent:
             parent_text = parent.get_text(" ", strip=True)
             # Try "MM月DD日 HH:MM" or "YYYY-MM-DD" format
@@ -477,53 +502,80 @@ def _fetch_hupu_voice(source: dict[str, str], session: requests.Session) -> list
                         published_at = datetime.strptime(date_match.group(1), "%Y-%m-%d")
                     except ValueError:
                         pass
-        # Tag based on content
-        is_trade = any(kw in combined for kw in ["交易", "签约", "裁员", "买断", "有意", "询价", "追求"])
-        is_draft = any(kw in combined for kw in ["选秀", "新秀"])
+        combined = title.lower()
+        is_trade = any(
+            kw in combined for kw in ["交易", "签约", "裁员", "买断", "有意", "询价", "追求"]
+        )
+        is_draft = any(
+            kw in combined for kw in ["选秀", "新秀", "签位", "号签", "试训", "行情"]
+        )
         prefix = "[交易] " if is_trade else ("[选秀] " if is_draft else "[流言] ")
         out.append({
             "title": f"{prefix}{title}",
             "summary": "",
-            "url": href,
+            "url": normalized_url,
             "published_at": published_at,
             "author": None,
             "team_abbrs": "",
         })
+
+    # Prefer authoritative Hupu news links, but keep a strict host/title
+    # guard because the page can include community recommendations.
+    for a in soup.select("a[href]"):
+        _append_item(a.get("href", ""), a.get_text(strip=True), a.find_parent())
 
     # Also try <a> tags with title attribute (voice.hupu.com uses this pattern)
     for a in soup.select("a[title]"):
-        href = a.get("href", "")
-        title = a.get("title", "").strip()
-        if not href or not title or len(title) < 8 or len(title) > 200:
-            continue
-        if "[流言板]" not in title and "流言板" not in title:
-            continue
-        combined = title.lower()
-        trade_cn = ["交易", "签约", "裁员", "买断", "自由球员", "选秀", "新秀",
-                     "合同", "续约", "报价", "有意", "询价", "追求", "离开", "加盟"]
-        if not any(kw in combined for kw in trade_cn):
-            continue
-        if href.startswith("/"):
-            href = f"https://voice.hupu.com{href}"
-        elif not href.startswith("http"):
-            continue
-        if href in seen_urls:
-            continue
-        seen_urls.add(href)
-        published_at = datetime.utcnow()
-        is_trade = any(kw in combined for kw in ["交易", "签约", "裁员", "买断", "有意", "询价", "追求"])
-        is_draft = any(kw in combined for kw in ["选秀", "新秀"])
-        prefix = "[交易] " if is_trade else ("[选秀] " if is_draft else "[流言] ")
-        out.append({
-            "title": f"{prefix}{title}",
-            "summary": "",
-            "url": href,
-            "published_at": published_at,
-            "author": None,
-            "team_abbrs": "",
-        })
+        _append_item(a.get("href", ""), a.get("title", ""), a.find_parent())
 
     return out[:30]
+
+
+def _normalize_hupu_url(href: str) -> str | None:
+    href = (href or "").strip()
+    if not href:
+        return None
+    if href.startswith("/"):
+        return f"https://voice.hupu.com{href}"
+    if href.startswith("http"):
+        return href
+    return None
+
+
+def _is_hupu_rumor_title(title: str) -> bool:
+    return "[流言板]" in title or "流言板" in title
+
+
+def _has_hupu_draft_context(title: str) -> bool:
+    lowered = title.lower()
+    return any(keyword.lower() in lowered for keyword in HUPU_DRAFT_CONTEXT_KEYWORDS)
+
+
+def _has_hupu_topic_context(title: str) -> bool:
+    lowered = title.lower()
+    return any(keyword.lower() in lowered for keyword in HUPU_TOPIC_KEYWORDS)
+
+
+def _is_hupu_noise_title(title: str) -> bool:
+    return any(keyword in title for keyword in HUPU_NOISE_KEYWORDS)
+
+
+def _should_keep_hupu_link(url: str, title: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    is_voice = host == "voice.hupu.com"
+    is_bbs = host == "bbs.hupu.com"
+    is_rumor = _is_hupu_rumor_title(title)
+    has_draft_context = _has_hupu_draft_context(title)
+
+    if _is_hupu_noise_title(title):
+        return False
+    if is_bbs:
+        return is_rumor and has_draft_context
+    if is_voice:
+        if not (is_rumor or has_draft_context):
+            return False
+        return has_draft_context or _has_hupu_topic_context(title)
+    return False
 
 
 FETCHERS: dict[str, _Fetcher] = {
@@ -543,6 +595,32 @@ def _is_game_article(text: str) -> bool:
     for pattern in GAME_EXCLUDE_PATTERNS:
         if re.search(pattern, text, re.IGNORECASE):
             return True
+    return False
+
+
+def is_draftmind_relevant_news(article_or_text: NewsArticle | str) -> bool:
+    """Return True for articles suitable for the public DraftMind news panel."""
+    if isinstance(article_or_text, str):
+        text = article_or_text
+    else:
+        text = " ".join(
+            [
+                article_or_text.title or "",
+                article_or_text.summary or "",
+                article_or_text.body_excerpt or "",
+            ]
+        )
+    lowered = text.lower()
+    if any(keyword in lowered for keyword in DRAFTMIND_NEWS_NOISE_KEYWORDS):
+        return False
+    if any(keyword in lowered for keyword in DRAFTMIND_NEWS_CONTEXT_KEYWORDS):
+        return True
+    if re.search(r"\bno\.\s*\d{1,2}\b", lowered):
+        return True
+    if re.search(r"#\s*\d{1,2}\b", lowered):
+        return True
+    if re.search(r"\b\d{1,2}(st|nd|rd|th)\s+pick\b", lowered):
+        return True
     return False
 
 
@@ -695,6 +773,7 @@ def search_articles(
     keyword: str | None = None,
     language: str | None = None,
     limit: int = 5,
+    draftmind_only: bool = False,
 ) -> list[NewsArticle]:
     """Lightweight retrieval for the agent RAG pipeline.
 
@@ -719,6 +798,11 @@ def search_articles(
     recent = [a for a in candidates if a.published_at.replace(tzinfo=None) >= cutoff]
     if recent:
         candidates = recent
+
+    if draftmind_only:
+        candidates = [article for article in candidates if is_draftmind_relevant_news(article)]
+        if not candidates:
+            return []
 
     needles: list[str] = []
     if prospect_name:
