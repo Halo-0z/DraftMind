@@ -8,7 +8,7 @@ from app.database import Base, engine
 # news_articles / prospects / etc. tables would not be auto-created when
 # the backend boots for the first time against an empty SQLite file.
 from app import models  # noqa: F401
-from app.routers import agent, health, news, prospects, recommendations, simulations, teams
+from app.routers import agent, health, news, prospects, recommendations, scouting, simulations, teams
 
 
 settings = get_settings()
@@ -50,3 +50,4 @@ app.include_router(recommendations.router, prefix=settings.api_prefix)
 app.include_router(agent.router, prefix=settings.api_prefix)
 app.include_router(simulations.router, prefix=settings.api_prefix)
 app.include_router(news.router, prefix=settings.api_prefix)
+app.include_router(scouting.router, prefix=settings.api_prefix)
