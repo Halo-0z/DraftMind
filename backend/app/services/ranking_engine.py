@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 from app.models.prospect import Prospect
@@ -21,6 +21,13 @@ COMBO_POSITION_NEED_FIELDS: dict[str, list[str]] = {
     "G": ["need_pg", "need_sg"],
     "F": ["need_sf", "need_pf"],
 }
+
+SAME_TIER_TALENT_GAP = 4.0
+CLOSE_FINAL_SCORE_GAP = 2.0
+HARD_TALENT_GAP = 6.0
+HARD_FINAL_SCORE_GAP = 3.0
+MAX_REVERSIBLE_FINAL_GAP = 0.5
+MAX_SCOUTING_TIEBREAKER_DELTA = 0.5
 
 
 def _position_need_field_names(position: str) -> list[str]:
@@ -67,6 +74,9 @@ class ProspectRanking:
     scouting_fit_adjustment: float | None = None
     scouting_fit_positives: list[str] | None = None
     scouting_fit_risks: list[str] | None = None
+    ranking_sort_score: float | None = None
+    scouting_tiebreaker_applied: bool = False
+    scouting_tiebreaker_delta: float = 0.0
 
 
 def rank_prospects(
@@ -77,7 +87,9 @@ def rank_prospects(
     team_need_profile: Any | None = None,
     scouting_profiles: Mapping[int | str, Any] | None = None,
     include_scouting_fit: bool = False,
+    enable_scouting_tiebreaker: bool = False,
 ) -> list[ProspectRanking]:
+    include_diagnostics = include_scouting_fit or enable_scouting_tiebreaker
     rankings = [
         score_prospect(
             team_need=team_need,
@@ -88,11 +100,14 @@ def rank_prospects(
                 prospect,
                 scouting_profiles,
             ),
-            include_scouting_fit=include_scouting_fit,
+            include_scouting_fit=include_diagnostics,
         )
         for prospect in prospects
     ]
-    return sorted(rankings, key=lambda ranking: ranking.final_score, reverse=True)
+    sorted_rankings = sorted(rankings, key=lambda ranking: ranking.final_score, reverse=True)
+    if not enable_scouting_tiebreaker:
+        return sorted_rankings
+    return _apply_scouting_tiebreakers(sorted_rankings)
 
 
 def score_prospect(
@@ -148,6 +163,74 @@ def _prospect_scouting_profile(
         scouting_profiles.get(prospect.id)
         or scouting_profiles.get(prospect.name)
     )
+
+
+def _apply_scouting_tiebreakers(rankings: list[ProspectRanking]) -> list[ProspectRanking]:
+    adjusted = [
+        replace(
+            ranking,
+            ranking_sort_score=ranking.final_score,
+            scouting_tiebreaker_applied=False,
+            scouting_tiebreaker_delta=0.0,
+        )
+        for ranking in rankings
+    ]
+
+    index = 0
+    while index < len(adjusted) - 1:
+        leader = adjusted[index]
+        challenger = adjusted[index + 1]
+        swapped = _try_scouting_tiebreaker_swap(leader, challenger)
+        if swapped:
+            adjusted[index], adjusted[index + 1] = swapped
+            index += 2
+        else:
+            index += 1
+    return adjusted
+
+
+def _try_scouting_tiebreaker_swap(
+    leader: ProspectRanking,
+    challenger: ProspectRanking,
+) -> tuple[ProspectRanking, ProspectRanking] | None:
+    final_gap = round(leader.final_score - challenger.final_score, 3)
+    talent_gap = abs(leader.talent_score - challenger.talent_score)
+
+    if final_gap < 0:
+        return None
+    if talent_gap > HARD_TALENT_GAP or final_gap > HARD_FINAL_SCORE_GAP:
+        return None
+    if talent_gap > SAME_TIER_TALENT_GAP or abs(final_gap) > CLOSE_FINAL_SCORE_GAP:
+        return None
+    if final_gap > MAX_REVERSIBLE_FINAL_GAP:
+        return None
+
+    leader_delta = _capped_scouting_delta(leader)
+    challenger_delta = _capped_scouting_delta(challenger)
+    effective_delta = round(challenger_delta - leader_delta, 3)
+    if effective_delta <= 0:
+        return None
+    if effective_delta < final_gap:
+        return None
+
+    applied_challenger = replace(
+        challenger,
+        ranking_sort_score=round(challenger.final_score + effective_delta, 3),
+        scouting_tiebreaker_applied=True,
+        scouting_tiebreaker_delta=round(effective_delta, 3),
+    )
+    unchanged_leader = replace(
+        leader,
+        ranking_sort_score=leader.final_score,
+        scouting_tiebreaker_applied=False,
+        scouting_tiebreaker_delta=0.0,
+    )
+    return applied_challenger, unchanged_leader
+
+
+def _capped_scouting_delta(ranking: ProspectRanking) -> float:
+    adjustment = ranking.scouting_fit_adjustment or 0.0
+    return _clamp(adjustment, 0.0, MAX_SCOUTING_TIEBREAKER_DELTA)
 
 
 def _talent_score(prospect: Prospect) -> float:

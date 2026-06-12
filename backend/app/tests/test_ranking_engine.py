@@ -126,6 +126,14 @@ def _ranking_contract(rankings):
     ]
 
 
+def _by_name(rankings):
+    return {ranking.prospect.name: ranking for ranking in rankings}
+
+
+def _names(rankings):
+    return [ranking.prospect.name for ranking in rankings]
+
+
 def test_rank_prospects_rewards_team_fit() -> None:
     lead_guard = _prospect("Lead Guard", "PG", 82, 25, 38, 6.5)
     wing = _prospect("Wing", "SF", 84, 25, 34, 2.0)
@@ -538,3 +546,251 @@ def test_missing_scouting_profiles_are_safe_with_include_flag() -> None:
     assert rankings[0].scouting_fit_adjustment == 0.0
     assert rankings[0].scouting_fit_positives == []
     assert rankings[0].scouting_fit_risks == []
+
+
+def test_scouting_tiebreaker_is_default_off_even_with_profiles() -> None:
+    guard = _prospect("Slightly Higher Guard", "PG", 75.0, 25, 38, 2.0)
+    big = _prospect("Better Scouting Fit Big", "C", 79.5, 25, 38, 1.5)
+    need = _need(
+        need_pg=1,
+        need_sg=5,
+        need_sf=5,
+        need_pf=5,
+        need_c=1,
+        need_shooting=5,
+        need_creation=5,
+        need_defense=5,
+    )
+
+    baseline = rank_prospects(need, pick_no=12, prospects=[guard, big])
+    with_profiles = rank_prospects(
+        need,
+        pick_no=12,
+        prospects=[guard, big],
+        team_need_profile=_team_scouting_profile(need_rim_protection=10),
+        scouting_profiles={
+            big.name: _prospect_scouting_profile(rim_protection=10),
+        },
+    )
+
+    assert _ranking_contract(with_profiles) == _ranking_contract(baseline)
+    assert _names(with_profiles) == _names(baseline)
+
+
+def test_same_tier_close_score_scouting_fit_can_break_tie() -> None:
+    guard = _prospect("Slightly Higher Guard", "PG", 75.0, 25, 38, 2.0)
+    big = _prospect("Better Scouting Fit Big", "C", 79.5, 25, 38, 1.5)
+    need = _need(
+        need_pg=1,
+        need_sg=5,
+        need_sf=5,
+        need_pf=5,
+        need_c=1,
+        need_shooting=5,
+        need_creation=5,
+        need_defense=5,
+    )
+
+    baseline = rank_prospects(need, pick_no=12, prospects=[guard, big])
+    assert _names(baseline) == ["Slightly Higher Guard", "Better Scouting Fit Big"]
+    assert _by_name(baseline)["Slightly Higher Guard"].final_score == 55.0
+    assert _by_name(baseline)["Better Scouting Fit Big"].final_score == 54.7
+
+    with_tiebreaker = rank_prospects(
+        need,
+        pick_no=12,
+        prospects=[guard, big],
+        team_need_profile=_team_scouting_profile(
+            need_rim_protection=10,
+            need_defensive_rebounding=10,
+            need_center=10,
+            need_nba_ready=10,
+        ),
+        scouting_profiles={
+            big.name: _prospect_scouting_profile(
+                rim_protection=10,
+                defensive_rebounding=10,
+                nba_readiness=10,
+                height="6-11",
+            ),
+        },
+        enable_scouting_tiebreaker=True,
+    )
+
+    assert _names(with_tiebreaker) == ["Better Scouting Fit Big", "Slightly Higher Guard"]
+    by_name = _by_name(with_tiebreaker)
+    assert by_name["Better Scouting Fit Big"].final_score == 54.7
+    assert by_name["Better Scouting Fit Big"].fit_score == _by_name(baseline)["Better Scouting Fit Big"].fit_score
+    assert by_name["Better Scouting Fit Big"].scouting_tiebreaker_applied is True
+    assert 0 < by_name["Better Scouting Fit Big"].scouting_tiebreaker_delta <= 0.5
+    assert by_name["Slightly Higher Guard"].scouting_tiebreaker_applied is False
+
+
+def test_scouting_tiebreaker_does_not_modify_final_or_fit_scores() -> None:
+    guard = _prospect("Slightly Higher Guard", "PG", 75.0, 25, 38, 2.0)
+    big = _prospect("Better Scouting Fit Big", "C", 79.5, 25, 38, 1.5)
+    need = _need(
+        need_pg=1,
+        need_sg=5,
+        need_sf=5,
+        need_pf=5,
+        need_c=1,
+        need_shooting=5,
+        need_creation=5,
+        need_defense=5,
+    )
+    baseline = rank_prospects(need, pick_no=12, prospects=[guard, big])
+
+    with_tiebreaker = rank_prospects(
+        need,
+        pick_no=12,
+        prospects=[guard, big],
+        team_need_profile=_team_scouting_profile(need_rim_protection=10, need_center=10),
+        scouting_profiles={
+            big.name: _prospect_scouting_profile(rim_protection=10, height="6-11"),
+        },
+        enable_scouting_tiebreaker=True,
+    )
+
+    baseline_scores = {
+        ranking.prospect.name: (ranking.final_score, ranking.fit_score)
+        for ranking in baseline
+    }
+    for ranking in with_tiebreaker:
+        assert (ranking.final_score, ranking.fit_score) == baseline_scores[ranking.prospect.name]
+
+
+def test_talent_gap_over_six_blocks_scouting_tiebreaker() -> None:
+    high_talent = _prospect("High Talent Guard", "PG", 88, 20, 38, 5.5)
+    lower_talent_fit = _prospect("Lower Talent Big Fit", "C", 70, 25, 38, 1.5)
+    rankings = rank_prospects(
+        _need(need_c=1, need_shooting=5, need_creation=5, need_defense=5),
+        pick_no=12,
+        prospects=[high_talent, lower_talent_fit],
+        team_need_profile=_team_scouting_profile(need_rim_protection=10, need_center=10),
+        scouting_profiles={
+            lower_talent_fit.name: _prospect_scouting_profile(
+                rim_protection=10,
+                height="6-11",
+            ),
+        },
+        enable_scouting_tiebreaker=True,
+    )
+
+    assert rankings[0].prospect.name == "High Talent Guard"
+    assert _by_name(rankings)["Lower Talent Big Fit"].scouting_tiebreaker_applied is False
+
+
+def test_base_final_gap_over_three_blocks_scouting_tiebreaker() -> None:
+    high_score = _prospect("High Score Guard", "PG", 88, 20, 38, 5.5)
+    lower_score_fit = _prospect("Lower Score Big Fit", "C", 70, 25, 38, 1.5)
+    rankings = rank_prospects(
+        _need(need_c=1, need_shooting=5, need_creation=5, need_defense=5),
+        pick_no=12,
+        prospects=[high_score, lower_score_fit],
+        team_need_profile=_team_scouting_profile(need_rim_protection=10, need_center=10),
+        scouting_profiles={
+            lower_score_fit.name: _prospect_scouting_profile(
+                rim_protection=10,
+                height="6-11",
+            ),
+        },
+        enable_scouting_tiebreaker=True,
+    )
+
+    assert rankings[0].prospect.name == "High Score Guard"
+    assert _by_name(rankings)["Lower Score Big Fit"].scouting_tiebreaker_applied is False
+
+
+def test_base_final_gap_over_half_point_blocks_scouting_tiebreaker() -> None:
+    guard = _prospect("Moderate Gap Guard", "PG", 75, 25, 38, 2)
+    big = _prospect("Moderate Gap Big", "C", 74, 25, 38, 1.5)
+    need = _need(
+        need_pg=1,
+        need_sg=5,
+        need_sf=5,
+        need_pf=5,
+        need_c=1,
+        need_shooting=5,
+        need_creation=5,
+        need_defense=5,
+    )
+    baseline = rank_prospects(need, pick_no=12, prospects=[guard, big])
+    assert _by_name(baseline)["Moderate Gap Guard"].final_score - _by_name(baseline)["Moderate Gap Big"].final_score > 0.5
+
+    rankings = rank_prospects(
+        need,
+        pick_no=12,
+        prospects=[guard, big],
+        team_need_profile=_team_scouting_profile(need_rim_protection=10, need_center=10),
+        scouting_profiles={
+            big.name: _prospect_scouting_profile(rim_protection=10, height="6-11"),
+        },
+        enable_scouting_tiebreaker=True,
+    )
+
+    assert rankings[0].prospect.name == "Moderate Gap Guard"
+    assert _by_name(rankings)["Moderate Gap Big"].scouting_tiebreaker_applied is False
+
+
+def test_news_display_only_profile_cannot_trigger_scouting_tiebreaker() -> None:
+    guard = _prospect("Slightly Higher Guard", "PG", 75.0, 25, 38, 2.0)
+    big = _prospect("Better Scouting Fit Big", "C", 79.5, 25, 38, 1.5)
+    need = _need(
+        need_pg=1,
+        need_sg=5,
+        need_sf=5,
+        need_pf=5,
+        need_c=1,
+        need_shooting=5,
+        need_creation=5,
+        need_defense=5,
+    )
+
+    rankings = rank_prospects(
+        need,
+        pick_no=12,
+        prospects=[guard, big],
+        team_need_profile=_team_scouting_profile(
+            source="news_display_only",
+            need_rim_protection=10,
+            need_center=10,
+        ),
+        scouting_profiles={
+            big.name: _prospect_scouting_profile(
+                source="news_display_only",
+                rim_protection=10,
+                height="6-11",
+            ),
+        },
+        enable_scouting_tiebreaker=True,
+    )
+
+    assert _names(rankings) == ["Slightly Higher Guard", "Better Scouting Fit Big"]
+    assert _by_name(rankings)["Better Scouting Fit Big"].scouting_tiebreaker_applied is False
+
+
+def test_missing_profiles_keep_scouting_tiebreaker_safe_and_inactive() -> None:
+    guard = _prospect("Slightly Higher Guard", "PG", 75.0, 25, 38, 2.0)
+    big = _prospect("Better Scouting Fit Big", "C", 79.5, 25, 38, 1.5)
+    need = _need(
+        need_pg=1,
+        need_sg=5,
+        need_sf=5,
+        need_pf=5,
+        need_c=1,
+        need_shooting=5,
+        need_creation=5,
+        need_defense=5,
+    )
+    baseline = rank_prospects(need, pick_no=12, prospects=[guard, big])
+
+    rankings = rank_prospects(
+        need,
+        pick_no=12,
+        prospects=[guard, big],
+        enable_scouting_tiebreaker=True,
+    )
+
+    assert _ranking_contract(rankings) == _ranking_contract(baseline)
+    assert all(r.scouting_tiebreaker_applied is False for r in rankings)
