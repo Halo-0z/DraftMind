@@ -1,7 +1,9 @@
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 from app.models.prospect import Prospect
 from app.models.team import TeamNeed
+from app.services.scouting_fit import calculate_scouting_fit
 
 
 POSITION_NEED_FIELDS = {
@@ -61,15 +63,33 @@ class ProspectRanking:
     final_score: float
     reasons: list[str]
     risks: list[str]
+    scouting_fit_score: float | None = None
+    scouting_fit_adjustment: float | None = None
+    scouting_fit_positives: list[str] | None = None
+    scouting_fit_risks: list[str] | None = None
 
 
 def rank_prospects(
     team_need: TeamNeed,
     pick_no: int,
     prospects: list[Prospect],
+    *,
+    team_need_profile: Any | None = None,
+    scouting_profiles: Mapping[int | str, Any] | None = None,
+    include_scouting_fit: bool = False,
 ) -> list[ProspectRanking]:
     rankings = [
-        score_prospect(team_need=team_need, pick_no=pick_no, prospect=prospect)
+        score_prospect(
+            team_need=team_need,
+            pick_no=pick_no,
+            prospect=prospect,
+            team_need_profile=team_need_profile,
+            prospect_scouting_profile=_prospect_scouting_profile(
+                prospect,
+                scouting_profiles,
+            ),
+            include_scouting_fit=include_scouting_fit,
+        )
         for prospect in prospects
     ]
     return sorted(rankings, key=lambda ranking: ranking.final_score, reverse=True)
@@ -79,6 +99,10 @@ def score_prospect(
     team_need: TeamNeed,
     pick_no: int,
     prospect: Prospect,
+    *,
+    team_need_profile: Any | None = None,
+    prospect_scouting_profile: Any | None = None,
+    include_scouting_fit: bool = False,
 ) -> ProspectRanking:
     talent_score = _talent_score(prospect)
     fit_score = _fit_score(team_need, prospect)
@@ -92,6 +116,12 @@ def score_prospect(
         - risk_penalty * 0.10
     )
 
+    scouting_fit = (
+        calculate_scouting_fit(team_need_profile, prospect_scouting_profile)
+        if include_scouting_fit
+        else None
+    )
+
     return ProspectRanking(
         prospect=prospect,
         talent_score=round(talent_score, 1),
@@ -101,6 +131,22 @@ def score_prospect(
         final_score=round(final_score, 1),
         reasons=_build_reasons(team_need, prospect, talent_score, fit_score, pick_value_score),
         risks=_build_risks(prospect),
+        scouting_fit_score=scouting_fit.score if scouting_fit else None,
+        scouting_fit_adjustment=scouting_fit.adjustment if scouting_fit else None,
+        scouting_fit_positives=scouting_fit.positives if scouting_fit else None,
+        scouting_fit_risks=scouting_fit.risks if scouting_fit else None,
+    )
+
+
+def _prospect_scouting_profile(
+    prospect: Prospect,
+    scouting_profiles: Mapping[int | str, Any] | None,
+) -> Any | None:
+    if not scouting_profiles:
+        return None
+    return (
+        scouting_profiles.get(prospect.id)
+        or scouting_profiles.get(prospect.name)
     )
 
 

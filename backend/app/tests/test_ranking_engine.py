@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from app.models.prospect import Prospect
 from app.models.team import TeamNeed
 from app.services.ranking_engine import rank_prospects
@@ -47,6 +49,81 @@ def _prospect(
         upside_score=upside_score,
         risk_score=risk_score,
     )
+
+
+def _team_scouting_profile(**overrides):
+    defaults = {
+        "need_rim_protection": 5,
+        "need_defensive_rebounding": 5,
+        "need_offensive_rebounding": 5,
+        "need_spacing": 5,
+        "need_shooting_volume": 5,
+        "need_movement_shooting": 5,
+        "need_self_creation": 5,
+        "need_secondary_creation": 5,
+        "need_playmaking": 5,
+        "need_rim_pressure": 5,
+        "need_finishing": 5,
+        "need_point_of_attack_defense": 5,
+        "need_switchability": 5,
+        "need_team_defense": 5,
+        "need_physicality": 5,
+        "need_nba_ready": 5,
+        "need_upside": 5,
+        "need_center": 5,
+        "need_big_depth": 5,
+        "need_wing_depth": 5,
+        "need_size": 5,
+        "source": "manual",
+        "need_confidence": 1.0,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _prospect_scouting_profile(**overrides):
+    defaults = {
+        "rim_protection": 5,
+        "defensive_rebounding": 5,
+        "offensive_rebounding": 5,
+        "spacing_value": 5,
+        "shooting_volume": 5,
+        "shooting_versatility": 5,
+        "self_creation": 5,
+        "secondary_creation": 5,
+        "passing_feel": 5,
+        "rim_pressure": 5,
+        "finishing": 5,
+        "point_of_attack_defense": 5,
+        "switchability": 5,
+        "team_defense": 5,
+        "physicality": 5,
+        "nba_readiness": 5,
+        "upside": 5,
+        "medical_risk": 5,
+        "foul_discipline": 5,
+        "height": "6-10",
+        "source": "manual",
+        "profile_confidence": 1.0,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _ranking_contract(rankings):
+    return [
+        (
+            ranking.prospect.name,
+            ranking.talent_score,
+            ranking.fit_score,
+            ranking.pick_value_score,
+            ranking.risk_penalty,
+            ranking.final_score,
+            ranking.reasons,
+            ranking.risks,
+        )
+        for ranking in rankings
+    ]
 
 
 def test_rank_prospects_rewards_team_fit() -> None:
@@ -370,3 +447,94 @@ def test_same_talent_higher_fit_ranks_higher() -> None:
     # And the higher-fit prospect must be the top-ranked.
     assert rankings[0].prospect.name == "High Fit"
     assert rankings[0].final_score > rankings[1].final_score
+
+
+def test_scouting_profiles_are_ignored_when_include_flag_is_false() -> None:
+    rim_big = _prospect("Rim Big", "C", 78, 25, 29, 1.5)
+    shooter = _prospect("Shooter", "SG", 80, 25, 40, 2.5)
+    need = _need(need_c=9, need_shooting=5, need_creation=5, need_defense=5)
+
+    baseline = rank_prospects(need, pick_no=12, prospects=[rim_big, shooter])
+    with_profiles = rank_prospects(
+        need,
+        pick_no=12,
+        prospects=[rim_big, shooter],
+        team_need_profile=_team_scouting_profile(need_rim_protection=10),
+        scouting_profiles={
+            "Rim Big": _prospect_scouting_profile(rim_protection=10),
+        },
+        include_scouting_fit=False,
+    )
+
+    assert _ranking_contract(with_profiles) == _ranking_contract(baseline)
+    assert all(r.scouting_fit_score is None for r in with_profiles)
+
+
+def test_include_scouting_fit_adds_diagnostics_without_changing_scores_or_order() -> None:
+    rim_big = _prospect("Rim Big", "C", 78, 25, 29, 1.5)
+    shooter = _prospect("Shooter", "SG", 80, 25, 40, 2.5)
+    need = _need(need_c=9, need_shooting=5, need_creation=5, need_defense=5)
+
+    baseline = rank_prospects(need, pick_no=12, prospects=[rim_big, shooter])
+    with_diagnostics = rank_prospects(
+        need,
+        pick_no=12,
+        prospects=[rim_big, shooter],
+        team_need_profile=_team_scouting_profile(
+            need_rim_protection=10,
+            need_defensive_rebounding=9,
+            need_center=9,
+        ),
+        scouting_profiles={
+            rim_big.name: _prospect_scouting_profile(
+                rim_protection=10,
+                defensive_rebounding=9,
+                height="6-11",
+            ),
+        },
+        include_scouting_fit=True,
+    )
+
+    assert _ranking_contract(with_diagnostics) == _ranking_contract(baseline)
+    rim_big_ranking = next(r for r in with_diagnostics if r.prospect.name == "Rim Big")
+    assert rim_big_ranking.scouting_fit_score is not None
+    assert rim_big_ranking.scouting_fit_score > 0
+    assert "rim_protection_fit" in (rim_big_ranking.scouting_fit_positives or [])
+    assert rim_big_ranking.scouting_fit_adjustment is not None
+
+
+def test_news_display_only_scouting_profile_has_no_effective_diagnostic_adjustment() -> None:
+    prospect = _prospect("News Only Big", "C", 80, 25, 30, 1.5)
+    rankings = rank_prospects(
+        _need(need_c=9, need_shooting=5, need_creation=5, need_defense=5),
+        pick_no=10,
+        prospects=[prospect],
+        team_need_profile=_team_scouting_profile(source="news_display_only", need_rim_protection=10),
+        scouting_profiles={
+            prospect.id: _prospect_scouting_profile(
+                source="news_display_only",
+                rim_protection=10,
+            ),
+        },
+        include_scouting_fit=True,
+    )
+
+    ranking = rankings[0]
+    assert ranking.scouting_fit_score == 0.0
+    assert ranking.scouting_fit_adjustment == 0.0
+
+
+def test_missing_scouting_profiles_are_safe_with_include_flag() -> None:
+    prospect = _prospect("Missing Profile", "SF", 80, 25, 35, 2.5)
+
+    rankings = rank_prospects(
+        _need(),
+        pick_no=10,
+        prospects=[prospect],
+        include_scouting_fit=True,
+    )
+
+    assert rankings[0].scouting_fit_score == 0.0
+    assert rankings[0].scouting_fit_adjustment == 0.0
+    assert rankings[0].scouting_fit_positives == []
+    assert rankings[0].scouting_fit_risks == []
