@@ -12,6 +12,7 @@ import {
   LockedPick,
   NewsArticle,
   Prospect,
+  RankedProspect,
   Recommendation,
   refreshNews,
   RosterPlayer,
@@ -71,6 +72,44 @@ const scoreLabels: Array<[keyof ScoreBreakdown, string]> = [
   ["final_score", "综合"],
 ];
 
+const SCOUTING_LABELS: Record<string, string> = {
+  rim_protection_fit: "补护框",
+  defensive_rebounding_fit: "补防守篮板",
+  offensive_rebounding_fit: "补进攻篮板",
+  spacing_fit: "补空间",
+  shooting_volume_fit: "补三分产量",
+  movement_shooting_fit: "补无球投射",
+  self_creation_fit: "补持球创造",
+  secondary_creation_fit: "补二传/副攻",
+  playmaking_fit: "补组织",
+  rim_pressure_fit: "补篮筐压力",
+  finishing_fit: "补终结",
+  point_of_attack_fit: "补外线领防",
+  switchability_fit: "补换防",
+  team_defense_fit: "补团队防守",
+  physicality_fit: "补对抗",
+  nba_readiness_fit: "即战力适配",
+  upside_fit: "长期上限",
+  center_depth_fit: "补中锋深度",
+  big_depth_fit: "补内线深度",
+  wing_depth_fit: "补侧翼深度",
+  size_fit: "补尺寸",
+  spacing_risk: "空间风险",
+  defense_risk: "防守风险",
+  readiness_risk: "即战力风险",
+  medical_risk: "医疗风险",
+  foul_risk: "犯规风险",
+  size_risk: "尺寸/对抗风险",
+};
+
+function scoutingLabel(key: string): string {
+  return SCOUTING_LABELS[key] ?? key.replaceAll("_", " ");
+}
+
+function hasScoutingDiagnostics(player: RankedProspect): boolean {
+  return player.scouting_fit_score !== undefined && player.scouting_fit_score !== null;
+}
+
 export default function DraftPage() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [teamId, setTeamId] = useState<number | null>(null);
@@ -88,6 +127,8 @@ export default function DraftPage() {
   const [agentAnswer, setAgentAnswer] = useState<AgentAskResponse | null>(null);
   const [simulation, setSimulation] = useState<Simulation | null>(null);
   const [simulationRounds, setSimulationRounds] = useState<1 | 2>(1);
+  const [showScoutingDiagnostics, setShowScoutingDiagnostics] = useState(false);
+  const [useScoutingTiebreaker, setUseScoutingTiebreaker] = useState(false);
   const [news, setNews] = useState<NewsArticle[]>([]);
   // Phase 3: locked-picks / user-override.  Each entry is one row in
   // the sidebar UI.  prospect_id is required for the MVP dropdown;
@@ -351,6 +392,9 @@ export default function DraftPage() {
         rounds: simulationRounds,
         limit: simulationPickLimit,
         evaluate_trades: true,
+        include_scouting_diagnostics:
+          showScoutingDiagnostics || useScoutingTiebreaker,
+        use_scouting_tiebreaker: useScoutingTiebreaker,
         // Send an empty array (not undefined) so the backend treats the
         // request as the same shape either way.  `undefined` also works
         // because the field is Optional, but explicit is clearer.
@@ -619,6 +663,58 @@ export default function DraftPage() {
                 当前将模拟 {simulationRounds === 1 ? "第一轮" : "两轮"} ·{" "}
                 {simulationPickLimit} picks；超出范围的锁定签会保留在表单中，但不会发送到本次模拟。
               </p>
+            </div>
+
+            <div className="mt-5 rounded-md border border-white/10 bg-court-black/55 p-4">
+              <p className="text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
+                球探适配
+              </p>
+              <div className="mt-3 grid gap-3">
+                <label className="flex cursor-pointer items-start gap-3 rounded-md border border-white/10 bg-white/[0.025] p-3 transition hover:border-court-line/50">
+                  <input
+                    checked={showScoutingDiagnostics}
+                    className="mt-1 h-4 w-4 accent-court-line"
+                    onChange={(event) => {
+                      const next = event.target.checked;
+                      setShowScoutingDiagnostics(next);
+                      if (!next) {
+                        setUseScoutingTiebreaker(false);
+                      }
+                    }}
+                    type="checkbox"
+                  />
+                  <span>
+                    <span className="block text-sm font-black text-court-text">
+                      显示球探适配诊断
+                    </span>
+                    <span className="mt-1 block text-xs leading-5 text-court-muted">
+                      仅显示适配标签和风险，不改变选人结果。
+                    </span>
+                  </span>
+                </label>
+                <label className="flex cursor-pointer items-start gap-3 rounded-md border border-amber-300/20 bg-amber-300/[0.035] p-3 transition hover:border-amber-300/50">
+                  <input
+                    checked={useScoutingTiebreaker}
+                    className="mt-1 h-4 w-4 accent-amber-300"
+                    onChange={(event) => {
+                      const next = event.target.checked;
+                      setUseScoutingTiebreaker(next);
+                      if (next) {
+                        setShowScoutingDiagnostics(true);
+                      }
+                    }}
+                    type="checkbox"
+                  />
+                  <span>
+                    <span className="block text-sm font-black text-court-text">
+                      启用同档适配打破平局
+                    </span>
+                    <span className="mt-1 block text-xs leading-5 text-court-muted">
+                      可能在同档小分差时选择更符合短板的球员；final_score 不会被改写。
+                    </span>
+                  </span>
+                </label>
+              </div>
             </div>
 
             {/* Phase 3: locked picks / user override editor.
@@ -1093,6 +1189,94 @@ function MiniList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
+function ScoutingDiagnostics({
+  player,
+  compact = false,
+}: {
+  player: RankedProspect;
+  compact?: boolean;
+}) {
+  if (!hasScoutingDiagnostics(player)) {
+    return null;
+  }
+
+  const positives = (player.scouting_fit_positives ?? []).slice(0, compact ? 2 : 4);
+  const risks = (player.scouting_fit_risks ?? []).slice(0, compact ? 0 : 3);
+  const score =
+    player.scouting_fit_score === null || player.scouting_fit_score === undefined
+      ? null
+      : player.scouting_fit_score.toFixed(1);
+
+  return (
+    <div
+      className={
+        compact
+          ? "mt-2 flex flex-wrap items-center gap-1.5"
+          : "mt-3 flex flex-wrap items-center gap-2"
+      }
+    >
+      {score ? (
+        <span className="inline-flex items-center rounded-md border border-court-line/30 bg-court-line/10 px-2 py-1 text-[11px] font-black text-court-line">
+          适配 {score}/10
+        </span>
+      ) : null}
+      {player.scouting_tiebreaker_applied ? (
+        <span className="inline-flex items-center rounded-md border border-amber-300/40 bg-amber-300/10 px-2 py-1 text-[11px] font-black text-amber-200">
+          同档适配打破平局
+        </span>
+      ) : null}
+      {positives.map((key) => (
+        <span
+          className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text"
+          key={key}
+        >
+          {scoutingLabel(key)}
+        </span>
+      ))}
+      {risks.map((key) => (
+        <span
+          className="inline-flex items-center rounded-md border border-red-300/30 bg-red-300/10 px-2 py-1 text-[11px] font-bold text-red-100"
+          key={key}
+        >
+          {scoutingLabel(key)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function CandidateBoardPreview({
+  candidates,
+}: {
+  candidates: RankedProspect[];
+}) {
+  return (
+    <div className="grid gap-2">
+      <p className="text-xs font-black uppercase tracking-[0.12em] text-court-line">
+        Live board
+      </p>
+      <div className="grid gap-2">
+        {candidates.slice(0, 5).map((candidate) => (
+          <div
+            className="rounded-md border border-white/10 bg-white/[0.025] px-3 py-2"
+            key={candidate.prospect.id}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-bold text-court-text">
+                {candidate.prospect.name}
+              </span>
+              <span className="text-xs font-black text-court-muted">
+                Final {candidate.scores.final_score}
+              </span>
+            </div>
+            <ScoutingDiagnostics compact player={candidate} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SimulationBoard({ simulation }: { simulation: Simulation }) {
   return (
     <section className="rounded-md border border-white/10 bg-court-panel p-5">
@@ -1154,6 +1338,9 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                     {pick.selected_player.scores.final_score}
                   </p>
                 </div>
+                <div className="mt-2 sm:ml-[146px]">
+                  <ScoutingDiagnostics player={pick.selected_player} />
+                </div>
                 <details className="mt-3 rounded-md border border-white/10 bg-court-black/60 px-3 py-2">
                   <summary className="cursor-pointer text-xs font-black uppercase tracking-[0.12em] text-court-line">
                     Agent process · {pick.trade_evaluation.action} ·{" "}
@@ -1173,6 +1360,9 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                         const isMarketContext = line.startsWith(
                           "Market context:",
                         );
+                        const isScoutingTiebreaker = line.startsWith(
+                          "Scouting fit tie-breaker applied:",
+                        );
                         if (isMarketContext) {
                           return (
                             <li
@@ -1188,19 +1378,25 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                             </li>
                           );
                         }
+                        if (isScoutingTiebreaker) {
+                          return (
+                            <li
+                              key={line}
+                              className="flex items-start gap-2 border-l-2 border-court-line/50 bg-court-line/[0.06] py-1 pl-3 pr-2"
+                            >
+                              <span className="mt-0.5 inline-block shrink-0 rounded border border-court-line/40 bg-court-line/10 px-1.5 py-0.5 text-[10px] font-bold text-court-line">
+                                同档适配
+                              </span>
+                              <span className="text-court-muted/90">
+                                {line}
+                              </span>
+                            </li>
+                          );
+                        }
                         return <li key={line}>{line}</li>;
                       })}
                     </ul>
-                    <p>
-                      Live board:{" "}
-                      {pick.candidate_board
-                        .slice(0, 5)
-                        .map(
-                          (candidate) =>
-                            `${candidate.prospect.name} (${candidate.scores.final_score})`,
-                        )
-                        .join(", ")}
-                    </p>
+                    <CandidateBoardPreview candidates={pick.candidate_board} />
                   </div>
                 </details>
               </article>
