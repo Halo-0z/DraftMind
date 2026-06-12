@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.draft import DraftOrder
 from app.models.prospect import Prospect
+from app.models.scouting import ProspectScoutingProfile, TeamNeedProfile
 from app.models.team import TeamNeed
+from app.schemas.recommendation import RankedProspectRead, ScoreBreakdown
 from app.schemas.simulation import (
     LockedPickRequest,
     SimulateRequest,
@@ -14,8 +16,7 @@ from app.schemas.simulation import (
     SimulatedPickRead,
     TradeEvaluation,
 )
-from app.services.ranking_engine import rank_prospects
-from app.services.recommendation_service import to_ranked_read
+from app.services.ranking_engine import ProspectRanking, rank_prospects
 from app.services.team_need_adjustment import (
     TeamNeedSnapshot,
     adjust_team_need_after_pick,
@@ -41,6 +42,75 @@ def _snapshot_from_orm(orm: TeamNeed) -> TeamNeedSnapshot:
         need_shooting=orm.need_shooting,
         need_defense=orm.need_defense,
         need_creation=orm.need_creation,
+    )
+
+
+def _to_ranked_read(ranking: ProspectRanking) -> RankedProspectRead:
+    return RankedProspectRead(
+        prospect=ranking.prospect,
+        scores=ScoreBreakdown(
+            talent_score=ranking.talent_score,
+            fit_score=ranking.fit_score,
+            pick_value_score=ranking.pick_value_score,
+            risk_penalty=ranking.risk_penalty,
+            final_score=ranking.final_score,
+        ),
+        reasons=ranking.reasons,
+        risks=ranking.risks,
+        scouting_fit_score=ranking.scouting_fit_score,
+        scouting_fit_positives=ranking.scouting_fit_positives,
+        scouting_fit_risks=ranking.scouting_fit_risks,
+        ranking_sort_score=ranking.ranking_sort_score,
+        scouting_tiebreaker_applied=ranking.scouting_tiebreaker_applied,
+        scouting_tiebreaker_delta=ranking.scouting_tiebreaker_delta,
+    )
+
+
+def _load_team_need_profile(
+    db: Session,
+    *,
+    team_id: int,
+    year: int,
+) -> TeamNeedProfile | None:
+    for horizon in ("next_season", "now"):
+        profile = db.scalar(
+            select(TeamNeedProfile).where(
+                TeamNeedProfile.team_id == team_id,
+                TeamNeedProfile.year == year,
+                TeamNeedProfile.horizon == horizon,
+            )
+        )
+        if profile is not None:
+            return profile
+    return None
+
+
+def _load_prospect_scouting_profiles(
+    db: Session,
+    *,
+    year: int,
+    prospects: list[Prospect],
+) -> dict[int, ProspectScoutingProfile]:
+    prospect_ids = [prospect.id for prospect in prospects if prospect.id is not None]
+    if not prospect_ids:
+        return {}
+    profiles = db.scalars(
+        select(ProspectScoutingProfile).where(
+            ProspectScoutingProfile.year == year,
+            ProspectScoutingProfile.prospect_id.in_(prospect_ids),
+        )
+    )
+    return {profile.prospect_id: profile for profile in profiles}
+
+
+def _scouting_tiebreaker_line(ranking: ProspectRanking) -> str | None:
+    if not ranking.scouting_tiebreaker_applied:
+        return None
+    positives = ranking.scouting_fit_positives or []
+    addressed = ", ".join(positives[:4]) if positives else "profile fit"
+    return (
+        "Scouting fit tie-breaker applied: selected within same talent tier "
+        f"because profile fit addressed {addressed}."
     )
 
 
@@ -212,6 +282,11 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
     # Dynamic team-need state: updated after each pick so that later picks
     # by the same team reflect already-addressed needs.
     team_need_state: dict[int, TeamNeedSnapshot] = {}
+    team_need_profile_state: dict[int, TeamNeedProfile | None] = {}
+    include_scouting_fit = (
+        request.include_scouting_diagnostics
+        or request.use_scouting_tiebreaker
+    )
 
     # Market context (Phase 5B-M1): read cached news once per simulation
     # and pass it to decision_log. This MUST NOT touch selected_player,
@@ -235,6 +310,21 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
             team_need_state[draft_pick.team_id] = _snapshot_from_orm(orm_need)
 
         team_need = team_need_state[draft_pick.team_id]
+        team_need_profile = None
+        scouting_profiles = None
+        if include_scouting_fit:
+            if draft_pick.team_id not in team_need_profile_state:
+                team_need_profile_state[draft_pick.team_id] = _load_team_need_profile(
+                    db=db,
+                    team_id=draft_pick.team_id,
+                    year=request.year,
+                )
+            team_need_profile = team_need_profile_state[draft_pick.team_id]
+            scouting_profiles = _load_prospect_scouting_profiles(
+                db=db,
+                year=request.year,
+                prospects=available_prospects,
+            )
 
         # Rank the live board regardless of whether this is a locked pick.
         # Locked picks still want alternatives + candidate_board populated
@@ -243,6 +333,10 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
             team_need=team_need,
             pick_no=draft_pick.pick_no,
             prospects=available_prospects,
+            team_need_profile=team_need_profile,
+            scouting_profiles=scouting_profiles,
+            include_scouting_fit=include_scouting_fit,
+            enable_scouting_tiebreaker=request.use_scouting_tiebreaker,
         )
 
         if draft_pick.pick_no in locked_prospects:
@@ -303,10 +397,10 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                     team=draft_pick.team,
                     original_team=draft_pick.original_team,
                     draft_order_note=draft_pick.notes,
-                    selected_player=to_ranked_read(chosen_ranking),
-                    alternatives=[to_ranked_read(r) for r in alternatives],
+                    selected_player=_to_ranked_read(chosen_ranking),
+                    alternatives=[_to_ranked_read(r) for r in alternatives],
                     candidate_board=[
-                        to_ranked_read(r) for r in override_rankings[:5]
+                        _to_ranked_read(r) for r in override_rankings[:5]
                     ],
                     trade_evaluation=trade_evaluation,
                     decision_log=decision_log,
@@ -330,6 +424,7 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                 alternatives=alternatives,
                 trade_evaluation=trade_evaluation,
                 draft_order_note=draft_pick.notes,
+                scouting_tiebreaker_line=_scouting_tiebreaker_line(selected),
                 market_context_lines=_market_context_lines_for_pick(
                     signals=market_signals,
                     team_abbr=draft_pick.team.abbr,
@@ -346,10 +441,10 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                     team=draft_pick.team,
                     original_team=draft_pick.original_team,
                     draft_order_note=draft_pick.notes,
-                    selected_player=to_ranked_read(selected),
-                    alternatives=[to_ranked_read(ranking) for ranking in alternatives],
+                    selected_player=_to_ranked_read(selected),
+                    alternatives=[_to_ranked_read(ranking) for ranking in alternatives],
                     candidate_board=[
-                        to_ranked_read(ranking) for ranking in rankings[:5]
+                        _to_ranked_read(ranking) for ranking in rankings[:5]
                     ],
                     trade_evaluation=trade_evaluation,
                     decision_log=decision_log,
@@ -437,6 +532,7 @@ def build_decision_log(
     trade_evaluation: TradeEvaluation,
     draft_order_note: str | None,
     locked: bool = False,
+    scouting_tiebreaker_line: str | None = None,
     market_context_lines: list[str] | None = None,
 ) -> list[str]:
     alt_summary = ", ".join(
@@ -460,6 +556,8 @@ def build_decision_log(
             f"GM submits {selected_name}; player is removed from later picks.",
         ]
     )
+    if scouting_tiebreaker_line:
+        log.append(scouting_tiebreaker_line)
     if locked:
         log.append("This pick was locked by user override.")
     log.append("Team needs are updated after the pick for later selections.")

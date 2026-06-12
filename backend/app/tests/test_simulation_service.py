@@ -21,7 +21,8 @@ from sqlalchemy.orm import Session
 
 from app.models.draft import DraftOrder
 from app.models.prospect import Prospect
-from app.models.team import TeamNeed
+from app.models.scouting import ProspectScoutingProfile, TeamNeedProfile
+from app.models.team import Team, TeamNeed
 from app.services.simulation_service import (
     adjust_team_need_after_pick,
 )
@@ -237,6 +238,109 @@ def _seed_prospects(db: Session, year: int = 2026, count: int = 60) -> None:
     db.flush()
 
 
+def _seed_scouting_tiebreaker_fixture(
+    db: Session,
+    *,
+    year: int = 2027,
+    profile_source: str = "manual",
+    high_talent_gap: bool = False,
+    include_team_profile: bool = True,
+    include_prospect_profile: bool = True,
+) -> tuple[Prospect, Prospect]:
+    """Seed a tiny board where scouting fit can only matter by opt-in.
+
+    Baseline old-model ranking: the guard is slightly ahead.  With seed/manual
+    scouting profiles, the big can pass only through the explicit same-tier
+    tiebreaker.  ``high_talent_gap`` widens the baseline gap so the guard must
+    remain first even when the tiebreaker flag is enabled.
+    """
+    spurs = db.query(Team).filter(Team.abbr == "SAS").one()
+    db.add(DraftOrder(year=year, pick_no=12, team_id=spurs.id))
+    db.add(
+        TeamNeed(
+            team_id=spurs.id,
+            year=year,
+            need_pg=1,
+            need_sg=5,
+            need_sf=5,
+            need_pf=5,
+            need_c=1,
+            need_shooting=5,
+            need_defense=5,
+            need_creation=5,
+        )
+    )
+    guard = Prospect(
+        year=year,
+        name="Slightly Higher Guard",
+        position="PG",
+        age=19.0,
+        height="6-4",
+        weight=190,
+        school_or_league="Mock",
+        ppg=17.0,
+        rpg=4.0,
+        apg=5.5 if high_talent_gap else 2.0,
+        fg_pct=46.0,
+        three_pct=38.0,
+        ft_pct=80.0,
+        stocks=1.5,
+        archetype="Pick-and-roll lead guard",
+        upside_score=88.0 if high_talent_gap else 75.0,
+        risk_score=20.0 if high_talent_gap else 25.0,
+    )
+    big = Prospect(
+        year=year,
+        name="Better Scouting Fit Big",
+        position="C",
+        age=19.0,
+        height="6-11",
+        weight=220,
+        school_or_league="Mock",
+        ppg=17.0,
+        rpg=4.0,
+        apg=1.5,
+        fg_pct=46.0,
+        three_pct=38.0,
+        ft_pct=80.0,
+        stocks=1.5,
+        archetype="Wing finisher",
+        upside_score=70.0 if high_talent_gap else 79.5,
+        risk_score=25.0,
+    )
+    db.add_all([guard, big])
+    db.flush()
+    if include_team_profile:
+        db.add(
+            TeamNeedProfile(
+                team_id=spurs.id,
+                year=year,
+                horizon="next_season",
+                source=profile_source,
+                need_confidence=1.0,
+                need_rim_protection=10,
+                need_defensive_rebounding=10,
+                need_center=10,
+                need_nba_ready=10,
+            )
+        )
+    if include_prospect_profile:
+        db.add(
+            ProspectScoutingProfile(
+                prospect_id=big.id,
+                year=year,
+                source=profile_source,
+                profile_confidence=1.0,
+                rim_protection=10,
+                defensive_rebounding=10,
+                nba_readiness=10,
+                height="6-11",
+            )
+        )
+    db.commit()
+    return guard, big
+
+
 class TestRounds1CapsAt30:
     def test_rounds_1_caps_at_30(
         self, client: TestClient, db_session: Session,
@@ -368,8 +472,10 @@ class TestTeamNeedStateEndToEnd:
             "app.services.ranking_engine"
         ).rank_prospects
 
-        def spy_rank_prospects(team_need, pick_no, prospects):
+        def spy_rank_prospects(team_need, pick_no, prospects, **kwargs):
             # Copy a snapshot of the need we care about.
+            assert kwargs.get("include_scouting_fit") is False
+            assert kwargs.get("enable_scouting_tiebreaker") is False
             captured_team_needs.append(
                 (pick_no, int(getattr(team_need, "need_pg", -1))),
             )
@@ -580,7 +686,9 @@ class TestLockedPicks:
         from app.services.ranking_engine import rank_prospects as real_rank
         from app.services import simulation_service as sim_mod
 
-        def spy(team_need, pick_no, prospects):
+        def spy(team_need, pick_no, prospects, **kwargs):
+            assert kwargs.get("include_scouting_fit") is False
+            assert kwargs.get("enable_scouting_tiebreaker") is False
             captured.append((pick_no, int(getattr(team_need, "need_pg", -1))))
             return real_rank(
                 team_need=team_need, pick_no=pick_no, prospects=prospects,
@@ -1618,3 +1726,189 @@ class _Phase2LockedPicksNoLockPreservesV1:
             p["selected_player"]["prospect"]["id"] for p in body["picks"]
         ]
         assert len(selected_ids) == len(set(selected_ids))
+
+
+class TestScoutingTiebreakerOptIn:
+    def test_default_request_keeps_old_selection_and_no_diagnostics(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        _seed_scouting_tiebreaker_fixture(db_session)
+
+        response = client.post(
+            "/api/simulate",
+            json={"year": 2027, "rounds": 1, "limit": 1},
+        )
+
+        assert response.status_code == 200
+        selected = response.json()["picks"][0]["selected_player"]
+        assert selected["prospect"]["name"] == "Slightly Higher Guard"
+        assert selected["scores"]["final_score"] == 55.0
+        assert selected["scores"]["fit_score"] == 30.7
+        assert selected["scouting_fit_score"] is None
+        assert selected["scouting_tiebreaker_applied"] is False
+
+    def test_diagnostics_only_exposes_fit_without_changing_selected_player(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        _seed_scouting_tiebreaker_fixture(db_session)
+
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2027,
+                "rounds": 1,
+                "limit": 1,
+                "include_scouting_diagnostics": True,
+            },
+        )
+
+        assert response.status_code == 200
+        pick = response.json()["picks"][0]
+        assert pick["selected_player"]["prospect"]["name"] == "Slightly Higher Guard"
+        big = next(
+            candidate
+            for candidate in pick["candidate_board"]
+            if candidate["prospect"]["name"] == "Better Scouting Fit Big"
+        )
+        assert big["scouting_fit_score"] is not None
+        assert "rim_protection_fit" in big["scouting_fit_positives"]
+        assert big["scouting_tiebreaker_applied"] is False
+
+    def test_explicit_tiebreaker_can_change_same_tier_small_gap_selection(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        _seed_scouting_tiebreaker_fixture(db_session)
+
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2027,
+                "rounds": 1,
+                "limit": 1,
+                "use_scouting_tiebreaker": True,
+            },
+        )
+
+        assert response.status_code == 200
+        pick = response.json()["picks"][0]
+        selected = pick["selected_player"]
+        assert selected["prospect"]["name"] == "Better Scouting Fit Big"
+        assert selected["scores"]["final_score"] == 54.7
+        assert selected["scores"]["fit_score"] == 23.9
+        assert selected["scouting_tiebreaker_applied"] is True
+        assert 0 < selected["scouting_tiebreaker_delta"] <= 0.5
+        assert any(
+            "Scouting fit tie-breaker applied" in line
+            for line in pick["decision_log"]
+        )
+
+    def test_high_talent_gap_blocks_tiebreaker_selection_change(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        _seed_scouting_tiebreaker_fixture(db_session, high_talent_gap=True)
+
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2027,
+                "rounds": 1,
+                "limit": 1,
+                "use_scouting_tiebreaker": True,
+            },
+        )
+
+        assert response.status_code == 200
+        pick = response.json()["picks"][0]
+        assert pick["selected_player"]["prospect"]["name"] == "Slightly Higher Guard"
+        big = next(
+            candidate
+            for candidate in pick["candidate_board"]
+            if candidate["prospect"]["name"] == "Better Scouting Fit Big"
+        )
+        assert big["scouting_tiebreaker_applied"] is False
+
+    def test_news_display_only_profiles_cannot_change_selected_player(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        _seed_scouting_tiebreaker_fixture(db_session, profile_source="news_display_only")
+
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2027,
+                "rounds": 1,
+                "limit": 1,
+                "use_scouting_tiebreaker": True,
+            },
+        )
+
+        assert response.status_code == 200
+        pick = response.json()["picks"][0]
+        assert pick["selected_player"]["prospect"]["name"] == "Slightly Higher Guard"
+        big = next(
+            candidate
+            for candidate in pick["candidate_board"]
+            if candidate["prospect"]["name"] == "Better Scouting Fit Big"
+        )
+        assert big["scouting_fit_score"] == 0.0
+        assert big["scouting_tiebreaker_applied"] is False
+
+    def test_missing_profiles_do_not_break_or_change_selection(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        _seed_scouting_tiebreaker_fixture(
+            db_session,
+            include_team_profile=False,
+            include_prospect_profile=False,
+        )
+
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2027,
+                "rounds": 1,
+                "limit": 1,
+                "use_scouting_tiebreaker": True,
+            },
+        )
+
+        assert response.status_code == 200
+        selected = response.json()["picks"][0]["selected_player"]
+        assert selected["prospect"]["name"] == "Slightly Higher Guard"
+        assert selected["scouting_fit_score"] == 0.0
+        assert selected["scouting_tiebreaker_applied"] is False
+
+    def test_locked_pick_is_not_overridden_by_tiebreaker(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        guard, _big = _seed_scouting_tiebreaker_fixture(db_session)
+
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2027,
+                "rounds": 1,
+                "limit": 1,
+                "use_scouting_tiebreaker": True,
+                "locked_picks": [{"pick_no": 12, "prospect_id": guard.id}],
+            },
+        )
+
+        assert response.status_code == 200
+        pick = response.json()["picks"][0]
+        assert pick["selected_player"]["prospect"]["name"] == "Slightly Higher Guard"
+        assert "locked by user override" in "\n".join(pick["decision_log"]).lower()

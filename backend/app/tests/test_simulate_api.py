@@ -71,3 +71,11 @@ def test_simulate_draft_returns_unique_players(client: TestClient, db_session) -
     assert body["picks"][0]["candidate_board"]
     assert body["picks"][0]["trade_evaluation"]["action"]
     assert body["picks"][0]["decision_log"]
+    selected = body["picks"][0]["selected_player"]
+    assert selected["prospect"]["name"]
+    assert selected["scores"]["final_score"] is not None
+    assert selected["reasons"]
+    assert selected["risks"]
+    assert "scouting_fit_score" in selected
+    assert "scouting_tiebreaker_applied" in selected
+    assert selected["scouting_tiebreaker_applied"] is False

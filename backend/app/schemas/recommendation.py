@@ -28,6 +28,12 @@ class RankedProspectRead(BaseModel):
     scores: ScoreBreakdown
     reasons: list[str]
     risks: list[str]
+    scouting_fit_score: float | None = None
+    scouting_fit_positives: list[str] | None = None
+    scouting_fit_risks: list[str] | None = None
+    ranking_sort_score: float | None = None
+    scouting_tiebreaker_applied: bool = False
+    scouting_tiebreaker_delta: float = 0.0
 
 
 class RecommendResponse(BaseModel):

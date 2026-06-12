@@ -23,6 +23,8 @@ class SimulateRequest(BaseModel):
     rounds: int = Field(default=1, ge=1, le=2)
     limit: int = Field(default=60, ge=1, le=60)
     evaluate_trades: bool = True
+    include_scouting_diagnostics: bool = False
+    use_scouting_tiebreaker: bool = False
     locked_picks: list[LockedPickRequest] | None = None
 
 
