@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.draft import DraftOrder
+from app.models.projection import ProspectDraftProjection, TeamPickProjection
 from app.models.prospect import Prospect
 from app.models.scouting import ProspectScoutingProfile, TeamNeedProfile
 from app.models.team import TeamNeed
@@ -23,6 +26,25 @@ from app.services.team_need_adjustment import (
 )
 from app.services.team_need_service import get_or_infer_team_need
 from app.services.rumor_extractor import NewsSignal, extract_signals
+
+
+PROJECTION_SOURCE_PRIORITY = {
+    "manual_projection": 0,
+    "seed_projection": 1,
+    "consensus_reference": 2,
+}
+TEAM_PROJECTION_TYPE_PRIORITY = {
+    "manual_prediction": 0,
+    "team_report": 1,
+    "workout_signal": 2,
+    "consensus_mock": 3,
+}
+
+
+@dataclass(frozen=True)
+class ProjectionDiagnostics:
+    prospect_projection: ProspectDraftProjection | None = None
+    team_projection: TeamPickProjection | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +67,12 @@ def _snapshot_from_orm(orm: TeamNeed) -> TeamNeedSnapshot:
     )
 
 
-def _to_ranked_read(ranking: ProspectRanking) -> RankedProspectRead:
+def _to_ranked_read(
+    ranking: ProspectRanking,
+    projection: ProjectionDiagnostics | None = None,
+) -> RankedProspectRead:
+    prospect_projection = projection.prospect_projection if projection else None
+    team_projection = projection.team_projection if projection else None
     return RankedProspectRead(
         prospect=ranking.prospect,
         scores=ScoreBreakdown(
@@ -63,6 +90,28 @@ def _to_ranked_read(ranking: ProspectRanking) -> RankedProspectRead:
         ranking_sort_score=ranking.ranking_sort_score,
         scouting_tiebreaker_applied=ranking.scouting_tiebreaker_applied,
         scouting_tiebreaker_delta=ranking.scouting_tiebreaker_delta,
+        projection_expected_pick=(
+            prospect_projection.expected_pick if prospect_projection else None
+        ),
+        projection_draft_range_min=(
+            prospect_projection.draft_range_min if prospect_projection else None
+        ),
+        projection_draft_range_max=(
+            prospect_projection.draft_range_max if prospect_projection else None
+        ),
+        projection_tier=prospect_projection.tier if prospect_projection else None,
+        projection_confidence=(
+            prospect_projection.confidence if prospect_projection else None
+        ),
+        projection_source=prospect_projection.source if prospect_projection else None,
+        projection_notes=prospect_projection.notes if prospect_projection else None,
+        team_projection_type=(
+            team_projection.projection_type if team_projection else None
+        ),
+        team_projection_confidence=(
+            team_projection.confidence if team_projection else None
+        ),
+        team_projection_notes=team_projection.notes if team_projection else None,
     )
 
 
@@ -101,6 +150,107 @@ def _load_prospect_scouting_profiles(
         )
     )
     return {profile.prospect_id: profile for profile in profiles}
+
+
+def _load_prospect_draft_projection_map(
+    db: Session,
+    *,
+    year: int,
+    prospects: list[Prospect],
+) -> dict[int, ProspectDraftProjection]:
+    prospect_ids = [prospect.id for prospect in prospects if prospect.id is not None]
+    if not prospect_ids:
+        return {}
+    projections = list(
+        db.scalars(
+            select(ProspectDraftProjection).where(
+                ProspectDraftProjection.year == year,
+                ProspectDraftProjection.prospect_id.in_(prospect_ids),
+            )
+        )
+    )
+    selected: dict[int, ProspectDraftProjection] = {}
+    for projection in sorted(
+        projections,
+        key=lambda item: (
+            item.prospect_id,
+            PROJECTION_SOURCE_PRIORITY.get(item.source, 99),
+            -item.confidence,
+        ),
+    ):
+        selected.setdefault(projection.prospect_id, projection)
+    return selected
+
+
+def _load_team_pick_projection_map(
+    db: Session,
+    *,
+    year: int,
+    pick_no: int,
+    team_id: int,
+) -> dict[int, TeamPickProjection]:
+    projections = list(
+        db.scalars(
+            select(TeamPickProjection).where(
+                TeamPickProjection.year == year,
+                TeamPickProjection.pick_no == pick_no,
+                TeamPickProjection.team_id == team_id,
+            )
+        )
+    )
+    selected: dict[int, TeamPickProjection] = {}
+    for projection in sorted(
+        projections,
+        key=lambda item: (
+            item.prospect_id,
+            TEAM_PROJECTION_TYPE_PRIORITY.get(item.projection_type, 99),
+            -item.confidence,
+        ),
+    ):
+        selected.setdefault(projection.prospect_id, projection)
+    return selected
+
+
+def _projection_for_ranking(
+    ranking: ProspectRanking,
+    *,
+    prospect_projection_map: dict[int, ProspectDraftProjection] | None,
+    team_projection_map: dict[int, TeamPickProjection] | None,
+) -> ProjectionDiagnostics | None:
+    prospect_id = ranking.prospect.id
+    if prospect_id is None:
+        return None
+    prospect_projection = (
+        prospect_projection_map.get(prospect_id) if prospect_projection_map else None
+    )
+    team_projection = (
+        team_projection_map.get(prospect_id) if team_projection_map else None
+    )
+    if prospect_projection is None and team_projection is None:
+        return None
+    return ProjectionDiagnostics(
+        prospect_projection=prospect_projection,
+        team_projection=team_projection,
+    )
+
+
+def _ranked_reads_with_projection(
+    rankings: list[ProspectRanking],
+    *,
+    prospect_projection_map: dict[int, ProspectDraftProjection] | None,
+    team_projection_map: dict[int, TeamPickProjection] | None,
+) -> list[RankedProspectRead]:
+    return [
+        _to_ranked_read(
+            ranking,
+            _projection_for_ranking(
+                ranking,
+                prospect_projection_map=prospect_projection_map,
+                team_projection_map=team_projection_map,
+            ),
+        )
+        for ranking in rankings
+    ]
 
 
 def _scouting_tiebreaker_line(ranking: ProspectRanking) -> str | None:
@@ -338,6 +488,20 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
             include_scouting_fit=include_scouting_fit,
             enable_scouting_tiebreaker=request.use_scouting_tiebreaker,
         )
+        prospect_projection_map = None
+        team_projection_map = None
+        if request.include_projection_diagnostics:
+            prospect_projection_map = _load_prospect_draft_projection_map(
+                db=db,
+                year=request.year,
+                prospects=available_prospects,
+            )
+            team_projection_map = _load_team_pick_projection_map(
+                db=db,
+                year=request.year,
+                pick_no=draft_pick.pick_no,
+                team_id=draft_pick.team_id,
+            )
 
         if draft_pick.pick_no in locked_prospects:
             chosen = locked_prospects[draft_pick.pick_no]
@@ -397,11 +561,24 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                     team=draft_pick.team,
                     original_team=draft_pick.original_team,
                     draft_order_note=draft_pick.notes,
-                    selected_player=_to_ranked_read(chosen_ranking),
-                    alternatives=[_to_ranked_read(r) for r in alternatives],
-                    candidate_board=[
-                        _to_ranked_read(r) for r in override_rankings[:5]
-                    ],
+                    selected_player=_to_ranked_read(
+                        chosen_ranking,
+                        _projection_for_ranking(
+                            chosen_ranking,
+                            prospect_projection_map=prospect_projection_map,
+                            team_projection_map=team_projection_map,
+                        ),
+                    ),
+                    alternatives=_ranked_reads_with_projection(
+                        alternatives,
+                        prospect_projection_map=prospect_projection_map,
+                        team_projection_map=team_projection_map,
+                    ),
+                    candidate_board=_ranked_reads_with_projection(
+                        override_rankings[:5],
+                        prospect_projection_map=prospect_projection_map,
+                        team_projection_map=team_projection_map,
+                    ),
                     trade_evaluation=trade_evaluation,
                     decision_log=decision_log,
                 )
@@ -441,11 +618,24 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                     team=draft_pick.team,
                     original_team=draft_pick.original_team,
                     draft_order_note=draft_pick.notes,
-                    selected_player=_to_ranked_read(selected),
-                    alternatives=[_to_ranked_read(ranking) for ranking in alternatives],
-                    candidate_board=[
-                        _to_ranked_read(ranking) for ranking in rankings[:5]
-                    ],
+                    selected_player=_to_ranked_read(
+                        selected,
+                        _projection_for_ranking(
+                            selected,
+                            prospect_projection_map=prospect_projection_map,
+                            team_projection_map=team_projection_map,
+                        ),
+                    ),
+                    alternatives=_ranked_reads_with_projection(
+                        alternatives,
+                        prospect_projection_map=prospect_projection_map,
+                        team_projection_map=team_projection_map,
+                    ),
+                    candidate_board=_ranked_reads_with_projection(
+                        rankings[:5],
+                        prospect_projection_map=prospect_projection_map,
+                        team_projection_map=team_projection_map,
+                    ),
                     trade_evaluation=trade_evaluation,
                     decision_log=decision_log,
                 )

@@ -34,6 +34,16 @@ class RankedProspectRead(BaseModel):
     ranking_sort_score: float | None = None
     scouting_tiebreaker_applied: bool = False
     scouting_tiebreaker_delta: float = 0.0
+    projection_expected_pick: int | None = None
+    projection_draft_range_min: int | None = None
+    projection_draft_range_max: int | None = None
+    projection_tier: int | None = None
+    projection_confidence: float | None = None
+    projection_source: str | None = None
+    projection_notes: str | None = None
+    team_projection_type: str | None = None
+    team_projection_confidence: float | None = None
+    team_projection_notes: str | None = None
 
 
 class RecommendResponse(BaseModel):

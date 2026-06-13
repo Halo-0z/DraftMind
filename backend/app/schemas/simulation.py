@@ -25,6 +25,7 @@ class SimulateRequest(BaseModel):
     evaluate_trades: bool = True
     include_scouting_diagnostics: bool = False
     use_scouting_tiebreaker: bool = False
+    include_projection_diagnostics: bool = False
     locked_picks: list[LockedPickRequest] | None = None
 
 

@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.models.draft import DraftOrder
+from app.models.projection import ProspectDraftProjection, TeamPickProjection
 from app.models.prospect import Prospect
 from app.models.scouting import ProspectScoutingProfile, TeamNeedProfile
 from app.models.team import Team, TeamNeed
@@ -1911,4 +1912,260 @@ class TestScoutingTiebreakerOptIn:
         assert response.status_code == 200
         pick = response.json()["picks"][0]
         assert pick["selected_player"]["prospect"]["name"] == "Slightly Higher Guard"
+        assert "locked by user override" in "\n".join(pick["decision_log"]).lower()
+
+
+def _base_projection_response(client: TestClient, *, include: bool = False) -> dict:
+    response = client.post(
+        "/api/simulate",
+        json={
+            "year": 2026,
+            "rounds": 1,
+            "limit": 1,
+            "include_projection_diagnostics": include,
+        },
+    )
+    assert response.status_code == 200
+    return response.json()["picks"][0]
+
+
+def _prospect_by_name(db_session: Session, name: str) -> Prospect:
+    return db_session.query(Prospect).filter(Prospect.name == name).one()
+
+
+def _team_by_abbr(db_session: Session, abbr: str) -> Team:
+    return db_session.query(Team).filter(Team.abbr == abbr).one()
+
+
+class TestProjectionDiagnostics:
+    def test_default_request_has_no_projection_diagnostics(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        prospect = _prospect_by_name(db_session, "Mikel Brown Jr.")
+        db_session.add(
+            ProspectDraftProjection(
+                prospect_id=prospect.id,
+                year=2026,
+                expected_pick=8,
+                draft_range_min=5,
+                draft_range_max=12,
+                tier=2,
+                source="manual_projection",
+                confidence=0.9,
+                notes="Should remain hidden by default.",
+            )
+        )
+        db_session.commit()
+
+        selected = _base_projection_response(client)["selected_player"]
+
+        assert selected["prospect"]["name"] == "Mikel Brown Jr."
+        assert selected["projection_expected_pick"] is None
+        assert selected["team_projection_type"] is None
+
+    def test_projection_diagnostics_do_not_change_selection_or_scores(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        baseline = _base_projection_response(client)
+        baseline_selected = baseline["selected_player"]
+        baseline_trade = baseline["trade_evaluation"]
+        selected_prospect = _prospect_by_name(
+            db_session,
+            baseline_selected["prospect"]["name"],
+        )
+        db_session.add(
+            ProspectDraftProjection(
+                prospect_id=selected_prospect.id,
+                year=2026,
+                expected_pick=14,
+                draft_range_min=10,
+                draft_range_max=20,
+                tier=3,
+                source="manual_projection",
+                confidence=0.88,
+                notes="Projection signal only.",
+            )
+        )
+        db_session.commit()
+
+        with_projection = _base_projection_response(client, include=True)
+        selected = with_projection["selected_player"]
+
+        assert selected["prospect"]["id"] == baseline_selected["prospect"]["id"]
+        assert selected["scores"]["final_score"] == baseline_selected["scores"]["final_score"]
+        assert selected["scores"]["fit_score"] == baseline_selected["scores"]["fit_score"]
+        assert with_projection["trade_evaluation"]["action"] == baseline_trade["action"]
+        assert (
+            with_projection["trade_evaluation"]["probability"]
+            == baseline_trade["probability"]
+        )
+        assert selected["projection_expected_pick"] == 14
+        assert selected["projection_draft_range_min"] == 10
+        assert selected["projection_draft_range_max"] == 20
+        assert selected["projection_tier"] == 3
+        assert selected["projection_confidence"] == 0.88
+        assert selected["projection_source"] == "manual_projection"
+
+    def test_manual_projection_takes_priority_over_seed_projection(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        prospect = _prospect_by_name(db_session, "Mikel Brown Jr.")
+        db_session.add_all(
+            [
+                ProspectDraftProjection(
+                    prospect_id=prospect.id,
+                    year=2026,
+                    expected_pick=22,
+                    source="seed_projection",
+                    confidence=1.0,
+                    notes="Lower priority seed projection.",
+                ),
+                ProspectDraftProjection(
+                    prospect_id=prospect.id,
+                    year=2026,
+                    expected_pick=7,
+                    source="manual_projection",
+                    confidence=0.5,
+                    notes="Higher priority manual projection.",
+                ),
+            ]
+        )
+        db_session.commit()
+
+        selected = _base_projection_response(client, include=True)["selected_player"]
+
+        assert selected["projection_source"] == "manual_projection"
+        assert selected["projection_expected_pick"] == 7
+        assert selected["projection_notes"] == "Higher priority manual projection."
+
+    def test_team_projection_attaches_only_to_matching_candidate(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        team = _team_by_abbr(db_session, "SAS")
+        selected_prospect = _prospect_by_name(db_session, "Mikel Brown Jr.")
+        other_prospect = _prospect_by_name(db_session, "Braylon Mullins")
+        db_session.add(
+            TeamPickProjection(
+                year=2026,
+                pick_no=2,
+                team_id=team.id,
+                prospect_id=other_prospect.id,
+                projection_type="team_report",
+                source="manual_projection",
+                confidence=0.77,
+                notes="Only Braylon should receive this team signal.",
+            )
+        )
+        db_session.commit()
+
+        pick = _base_projection_response(client, include=True)
+        selected = pick["selected_player"]
+        braylon = next(
+            candidate
+            for candidate in pick["candidate_board"]
+            if candidate["prospect"]["id"] == other_prospect.id
+        )
+
+        assert selected["prospect"]["id"] == selected_prospect.id
+        assert selected["team_projection_type"] is None
+        assert braylon["team_projection_type"] == "team_report"
+        assert braylon["team_projection_confidence"] == 0.77
+        assert braylon["team_projection_notes"] == (
+            "Only Braylon should receive this team signal."
+        )
+
+    def test_team_projection_type_priority_beats_confidence(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        team = _team_by_abbr(db_session, "SAS")
+        prospect = _prospect_by_name(db_session, "Mikel Brown Jr.")
+        db_session.add_all(
+            [
+                TeamPickProjection(
+                    year=2026,
+                    pick_no=2,
+                    team_id=team.id,
+                    prospect_id=prospect.id,
+                    projection_type="team_report",
+                    source="manual_projection",
+                    confidence=0.95,
+                    notes="Higher confidence, lower type priority.",
+                ),
+                TeamPickProjection(
+                    year=2026,
+                    pick_no=2,
+                    team_id=team.id,
+                    prospect_id=prospect.id,
+                    projection_type="manual_prediction",
+                    source="manual_projection",
+                    confidence=0.5,
+                    notes="Manual prediction should win.",
+                ),
+            ]
+        )
+        db_session.commit()
+
+        selected = _base_projection_response(client, include=True)["selected_player"]
+
+        assert selected["team_projection_type"] == "manual_prediction"
+        assert selected["team_projection_confidence"] == 0.5
+        assert selected["team_projection_notes"] == "Manual prediction should win."
+
+    def test_missing_projection_does_not_crash(
+        self,
+        client: TestClient,
+    ) -> None:
+        selected = _base_projection_response(client, include=True)["selected_player"]
+
+        assert selected["prospect"]["name"] == "Mikel Brown Jr."
+        assert selected["projection_expected_pick"] is None
+        assert selected["team_projection_type"] is None
+
+    def test_locked_pick_keeps_override_and_receives_projection_diagnostics(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        braylon = _prospect_by_name(db_session, "Braylon Mullins")
+        db_session.add(
+            ProspectDraftProjection(
+                prospect_id=braylon.id,
+                year=2026,
+                expected_pick=18,
+                draft_range_min=15,
+                draft_range_max=24,
+                tier=4,
+                source="manual_projection",
+                confidence=0.81,
+                notes="Locked pick still gets projection diagnostics.",
+            )
+        )
+        db_session.commit()
+
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 1,
+                "limit": 1,
+                "include_projection_diagnostics": True,
+                "locked_picks": [{"pick_no": 2, "prospect_id": braylon.id}],
+            },
+        )
+
+        assert response.status_code == 200
+        pick = response.json()["picks"][0]
+        selected = pick["selected_player"]
+        assert selected["prospect"]["name"] == "Braylon Mullins"
+        assert selected["projection_expected_pick"] == 18
         assert "locked by user override" in "\n".join(pick["decision_log"]).lower()
