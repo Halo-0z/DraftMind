@@ -110,6 +110,24 @@ export type RankedProspect = {
   ranking_sort_score?: number | null;
   scouting_tiebreaker_applied?: boolean;
   scouting_tiebreaker_delta?: number;
+  projection_expected_pick?: number | null;
+  projection_draft_range_min?: number | null;
+  projection_draft_range_max?: number | null;
+  projection_tier?: number | null;
+  projection_confidence?: number | null;
+  projection_source?: string | null;
+  projection_notes?: string | null;
+  team_projection_type?: string | null;
+  team_projection_confidence?: number | null;
+  team_projection_notes?: string | null;
+  prediction_range_score?: number | null;
+  prediction_tier_score?: number | null;
+  prediction_team_projection_score?: number | null;
+  prediction_confidence_weight?: number | null;
+  prediction_shadow_score?: number | null;
+  prediction_shadow_rank?: number | null;
+  prediction_shadow_delta?: number | null;
+  prediction_calibration_notes?: string[] | null;
 };
 
 export type Recommendation = {
@@ -160,6 +178,8 @@ export type SimulatePayload = {
   evaluate_trades?: boolean;
   include_scouting_diagnostics?: boolean;
   use_scouting_tiebreaker?: boolean;
+  include_projection_diagnostics?: boolean;
+  include_prediction_shadow?: boolean;
   // Phase 3: user-override / locked picks.  Each entry pins a specific
   // pick_no to a specific prospect.  The backend (Phase 2) also accepts
   // a free-text `prospect_name` fallback, but the MVP frontend only

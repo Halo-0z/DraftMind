@@ -158,6 +158,44 @@ function hasScoutingDiagnostics(player: RankedProspect): boolean {
   return player.scouting_fit_score !== undefined && player.scouting_fit_score !== null;
 }
 
+function hasProjectionDiagnostics(player: RankedProspect): boolean {
+  return (
+    player.projection_expected_pick !== undefined &&
+    player.projection_expected_pick !== null
+  ) || (
+    player.team_projection_type !== undefined &&
+    player.team_projection_type !== null
+  ) || hasPredictionShadow(player);
+}
+
+function hasPredictionShadow(player: RankedProspect): boolean {
+  return (
+    player.prediction_shadow_score !== undefined &&
+    player.prediction_shadow_score !== null
+  );
+}
+
+function percent(value: number | null | undefined): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatProjectionSource(source: string): string {
+  return source.replaceAll("_", " ");
+}
+
+function formatShadowDelta(delta: number | null | undefined): string | null {
+  if (delta === null || delta === undefined) {
+    return null;
+  }
+  if (delta > 0) {
+    return `+${delta}`;
+  }
+  return String(delta);
+}
+
 export default function DraftPage() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [teamId, setTeamId] = useState<number | null>(null);
@@ -177,6 +215,7 @@ export default function DraftPage() {
   const [simulationRounds, setSimulationRounds] = useState<1 | 2>(1);
   const [showScoutingDiagnostics, setShowScoutingDiagnostics] = useState(false);
   const [useScoutingTiebreaker, setUseScoutingTiebreaker] = useState(false);
+  const [showPredictionShadow, setShowPredictionShadow] = useState(false);
   const [news, setNews] = useState<NewsArticle[]>([]);
   const [teamProfile, setTeamProfile] = useState<TeamNeedProfile | null>(null);
   const [teamProfileForm, setTeamProfileForm] = useState<TeamProfileForm>(
@@ -555,6 +594,8 @@ export default function DraftPage() {
         include_scouting_diagnostics:
           showScoutingDiagnostics || useScoutingTiebreaker,
         use_scouting_tiebreaker: useScoutingTiebreaker,
+        include_projection_diagnostics: showPredictionShadow,
+        include_prediction_shadow: showPredictionShadow,
         // Send an empty array (not undefined) so the backend treats the
         // request as the same shape either way.  `undefined` also works
         // because the field is Optional, but explicit is clearer.
@@ -895,6 +936,28 @@ export default function DraftPage() {
               </div>
             </div>
 
+            <div className="mt-5 rounded-md border border-white/10 bg-court-black/55 p-4">
+              <p className="text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
+                预测校准
+              </p>
+              <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-md border border-sky-300/20 bg-sky-300/[0.035] p-3 transition hover:border-sky-300/50">
+                <input
+                  checked={showPredictionShadow}
+                  className="mt-1 h-4 w-4 accent-sky-300"
+                  onChange={(event) => setShowPredictionShadow(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  <span className="block text-sm font-black text-court-text">
+                    显示预测影子分
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-court-muted">
+                    展示 market projection、team signal 和 shadow rank；影子分只用于观察预测校准方向，不改变当前 selected_player。
+                  </span>
+                </span>
+              </label>
+            </div>
+
             {/* Phase 3: locked picks / user override editor.
                 MVP uses a prospect_id dropdown.  Backend also supports
                 prospect_name free-text matching, but the UI does not
@@ -1097,6 +1160,8 @@ function RecommendationPanel({
             </div>
           </div>
         </div>
+
+        <ProjectionPredictionDiagnostics player={player} />
       </article>
 
       <div className="grid gap-5 xl:grid-cols-2">
@@ -1138,6 +1203,7 @@ function RecommendationPanel({
                   value={alternative.scores.final_score}
                 />
               </div>
+              <ProjectionPredictionDiagnostics compact player={alternative} />
               <p className="mt-4 text-sm leading-6 text-court-muted">
                 {alternative.reasons[0] ?? "综合评分接近推荐球员"}
               </p>
@@ -1536,6 +1602,131 @@ function ScoutingDiagnostics({
   );
 }
 
+function ProjectionPredictionDiagnostics({
+  player,
+  compact = false,
+}: {
+  player: RankedProspect;
+  compact?: boolean;
+}) {
+  if (!hasProjectionDiagnostics(player)) {
+    return null;
+  }
+
+  const confidence = percent(player.projection_confidence);
+  const teamConfidence = percent(player.team_projection_confidence);
+  const shadowDelta = formatShadowDelta(player.prediction_shadow_delta);
+  const notes = (player.prediction_calibration_notes ?? []).slice(
+    0,
+    compact ? 1 : 3,
+  );
+
+  return (
+    <div
+      className={
+        compact
+          ? "mt-2 grid gap-1.5"
+          : "mt-4 rounded-md border border-sky-300/20 bg-sky-300/[0.035] p-3"
+      }
+    >
+      {!compact ? (
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-black uppercase tracking-[0.16em] text-sky-200">
+              Projection shadow
+            </p>
+            <p className="mt-1 text-xs leading-5 text-court-muted">
+              Projection 是预测信号，不是最终答案；影子分不会改变当前 selected_player。
+            </p>
+          </div>
+          {hasPredictionShadow(player) ? (
+            <span className="rounded-md border border-sky-300/30 bg-sky-300/10 px-2 py-1 text-xs font-black text-sky-100">
+              Shadow {player.prediction_shadow_score?.toFixed(1)}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        {player.projection_expected_pick ? (
+          <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+            Expected #{player.projection_expected_pick}
+          </span>
+        ) : null}
+        {player.projection_draft_range_min && player.projection_draft_range_max ? (
+          <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+            Range {player.projection_draft_range_min}-{player.projection_draft_range_max}
+          </span>
+        ) : null}
+        {player.projection_tier ? (
+          <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+            Tier {player.projection_tier}
+          </span>
+        ) : null}
+        {confidence ? (
+          <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+            Projection {confidence}
+          </span>
+        ) : null}
+        {player.projection_source ? (
+          <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+            {formatProjectionSource(player.projection_source)}
+          </span>
+        ) : null}
+        {player.team_projection_type ? (
+          <span className="inline-flex items-center rounded-md border border-sky-300/30 bg-sky-300/10 px-2 py-1 text-[11px] font-black text-sky-100">
+            Team signal {formatProjectionSource(player.team_projection_type)}
+            {teamConfidence ? ` · ${teamConfidence}` : ""}
+          </span>
+        ) : null}
+        {player.prediction_shadow_rank ? (
+          <span className="inline-flex items-center rounded-md border border-court-line/30 bg-court-line/10 px-2 py-1 text-[11px] font-black text-court-line">
+            Shadow rank #{player.prediction_shadow_rank}
+          </span>
+        ) : null}
+        {shadowDelta ? (
+          <span
+            className={`inline-flex items-center rounded-md border px-2 py-1 text-[11px] font-black ${
+              (player.prediction_shadow_delta ?? 0) >= 0
+                ? "border-court-line/30 bg-court-line/10 text-court-line"
+                : "border-amber-300/30 bg-amber-300/10 text-amber-100"
+            }`}
+            title="+3 means shadow ranking is 3 spots higher than the original candidate order."
+          >
+            Delta {shadowDelta}
+          </span>
+        ) : null}
+      </div>
+
+      {!compact && hasPredictionShadow(player) ? (
+        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-court-muted sm:grid-cols-4">
+          <span>Range {player.prediction_range_score?.toFixed(1) ?? "--"}</span>
+          <span>Tier {player.prediction_tier_score?.toFixed(1) ?? "--"}</span>
+          <span>
+            Team {player.prediction_team_projection_score?.toFixed(1) ?? "--"}
+          </span>
+          <span>
+            Weight {percent(player.prediction_confidence_weight) ?? "--"}
+          </span>
+        </div>
+      ) : null}
+
+      {notes.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {notes.map((note) => (
+            <span
+              className="inline-flex items-center rounded-md border border-sky-300/20 bg-sky-300/[0.06] px-2 py-1 text-[11px] font-bold text-sky-100"
+              key={note}
+            >
+              {note}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function CandidateBoardPreview({
   candidates,
 }: {
@@ -1561,6 +1752,7 @@ function CandidateBoardPreview({
               </span>
             </div>
             <ScoutingDiagnostics compact player={candidate} />
+            <ProjectionPredictionDiagnostics compact player={candidate} />
           </div>
         ))}
       </div>
@@ -1631,6 +1823,7 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                 </div>
                 <div className="mt-2 sm:ml-[146px]">
                   <ScoutingDiagnostics player={pick.selected_player} />
+                  <ProjectionPredictionDiagnostics player={pick.selected_player} />
                 </div>
                 <details className="mt-3 rounded-md border border-white/10 bg-court-black/60 px-3 py-2">
                   <summary className="cursor-pointer text-xs font-black uppercase tracking-[0.12em] text-court-line">
