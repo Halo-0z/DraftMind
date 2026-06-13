@@ -128,6 +128,7 @@ export type RankedProspect = {
   prediction_shadow_rank?: number | null;
   prediction_shadow_delta?: number | null;
   prediction_calibration_notes?: string[] | null;
+  candidate_source?: string | null;
 };
 
 export type Recommendation = {

@@ -31,6 +31,7 @@ from app.services.team_need_adjustment import (
     TeamNeedSnapshot,
     clamp_need,
 )
+from scripts import seed_db
 
 
 # ---------------------------------------------------------------------------
@@ -2437,3 +2438,93 @@ class TestPredictionCalibrationShadow:
         assert selected["prospect"]["name"] == "Braylon Mullins"
         assert selected["prediction_shadow_score"] is not None
         assert "locked by user override" in "\n".join(pick["decision_log"]).lower()
+
+    def test_prediction_shadow_exposes_team_projection_candidate_outside_ranking_top_five(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        seed_db.seed_demo_data(db_session)
+        db_session.commit()
+
+        baseline_response = client.post(
+            "/api/simulate",
+            json={"year": 2026, "rounds": 1, "limit": 2},
+        )
+        assert baseline_response.status_code == 200
+        baseline_pick = baseline_response.json()["picks"][1]
+        assert baseline_pick["pick"] == 2
+        assert baseline_pick["team"]["abbr"] == "DET"
+        assert baseline_pick["selected_player"]["prospect"]["name"] == "Darryn Peterson"
+        assert all(
+            candidate["prospect"]["name"] != "Cameron Boozer"
+            for candidate in baseline_pick["candidate_board"]
+        )
+
+        shadow_response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 1,
+                "limit": 2,
+                "include_prediction_shadow": True,
+            },
+        )
+        assert shadow_response.status_code == 200
+        shadow_pick = shadow_response.json()["picks"][1]
+        assert shadow_pick["selected_player"]["prospect"]["name"] == "Darryn Peterson"
+
+        cameron = next(
+            candidate
+            for candidate in shadow_pick["candidate_board"]
+            if candidate["prospect"]["name"] == "Cameron Boozer"
+        )
+        assert cameron["scores"]["final_score"] == 66.3
+        assert cameron["projection_expected_pick"] == 2
+        assert cameron["projection_draft_range_min"] == 1
+        assert cameron["projection_draft_range_max"] == 5
+        assert cameron["projection_tier"] == 1
+        assert cameron["team_projection_type"] == "consensus_mock"
+        assert cameron["prediction_shadow_rank"] == 2
+        assert cameron["prediction_shadow_score"] is not None
+        assert cameron["candidate_source"] in {
+            "prediction_shadow_top",
+            "team_projection_match",
+        }
+        assert len(shadow_pick["candidate_board"]) > len(baseline_pick["candidate_board"])
+
+    def test_prediction_shadow_candidate_visibility_does_not_change_selected_or_scores(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        seed_db.seed_demo_data(db_session)
+        db_session.commit()
+
+        baseline_response = client.post(
+            "/api/simulate",
+            json={"year": 2026, "rounds": 1, "limit": 2},
+        )
+        shadow_response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 1,
+                "limit": 2,
+                "include_prediction_shadow": True,
+            },
+        )
+        assert baseline_response.status_code == 200
+        assert shadow_response.status_code == 200
+
+        baseline_pick = baseline_response.json()["picks"][1]
+        shadow_pick = shadow_response.json()["picks"][1]
+        assert shadow_pick["selected_player"]["prospect"]["id"] == (
+            baseline_pick["selected_player"]["prospect"]["id"]
+        )
+        assert shadow_pick["selected_player"]["scores"]["final_score"] == (
+            baseline_pick["selected_player"]["scores"]["final_score"]
+        )
+        assert shadow_pick["selected_player"]["scores"]["fit_score"] == (
+            baseline_pick["selected_player"]["scores"]["fit_score"]
+        )

@@ -106,6 +106,12 @@ const SCOUTING_LABELS: Record<string, string> = {
   size_risk: "尺寸/对抗风险",
 };
 
+const CANDIDATE_SOURCE_LABELS: Record<string, string> = {
+  ranking_top: "原排名 Top",
+  prediction_shadow_top: "影子排名关注",
+  team_projection_match: "球队预测信号",
+};
+
 const TEAM_PROFILE_FIELDS = [
   { key: "need_center", label: "中锋深度" },
   { key: "need_rim_protection", label: "护框" },
@@ -194,6 +200,13 @@ function formatShadowDelta(delta: number | null | undefined): string | null {
     return `+${delta}`;
   }
   return String(delta);
+}
+
+function candidateSourceLabel(source: string | null | undefined): string | null {
+  if (!source || source === "ranking_top") {
+    return null;
+  }
+  return CANDIDATE_SOURCE_LABELS[source] ?? source.replaceAll("_", " ");
 }
 
 export default function DraftPage() {
@@ -1738,15 +1751,24 @@ function CandidateBoardPreview({
         Live board
       </p>
       <div className="grid gap-2">
-        {candidates.slice(0, 5).map((candidate) => (
+        {candidates.map((candidate) => {
+          const sourceLabel = candidateSourceLabel(candidate.candidate_source);
+          return (
           <div
             className="rounded-md border border-white/10 bg-white/[0.025] px-3 py-2"
             key={candidate.prospect.id}
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-sm font-bold text-court-text">
-                {candidate.prospect.name}
-              </span>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="text-sm font-bold text-court-text">
+                  {candidate.prospect.name}
+                </span>
+                {sourceLabel ? (
+                  <span className="rounded-md border border-sky-300/30 bg-sky-300/10 px-1.5 py-0.5 text-[10px] font-black text-sky-100">
+                    {sourceLabel}
+                  </span>
+                ) : null}
+              </div>
               <span className="text-xs font-black text-court-muted">
                 Final {candidate.scores.final_score}
               </span>
@@ -1754,7 +1776,8 @@ function CandidateBoardPreview({
             <ScoutingDiagnostics compact player={candidate} />
             <ProjectionPredictionDiagnostics compact player={candidate} />
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

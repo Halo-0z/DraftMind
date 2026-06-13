@@ -77,6 +77,7 @@ def _snapshot_from_orm(orm: TeamNeed) -> TeamNeedSnapshot:
 def _to_ranked_read(
     ranking: ProspectRanking,
     projection: ProjectionDiagnostics | None = None,
+    candidate_source: str | None = None,
 ) -> RankedProspectRead:
     prospect_projection = projection.prospect_projection if projection else None
     team_projection = projection.team_projection if projection else None
@@ -148,6 +149,7 @@ def _to_ranked_read(
         prediction_calibration_notes=(
             prediction_calibration.notes if prediction_calibration else None
         ),
+        candidate_source=candidate_source,
     )
 
 
@@ -281,6 +283,7 @@ def _ranked_reads_with_projection(
     prospect_projection_map: dict[int, ProspectDraftProjection] | None,
     team_projection_map: dict[int, TeamPickProjection] | None,
     prediction_shadow_map: dict[int, tuple[PredictionCalibrationResult, int, int]] | None = None,
+    candidate_source_map: dict[int, str] | None = None,
 ) -> list[RankedProspectRead]:
     return [
         _to_ranked_read(
@@ -290,6 +293,11 @@ def _ranked_reads_with_projection(
                 prospect_projection_map=prospect_projection_map,
                 team_projection_map=team_projection_map,
                 prediction_shadow_map=prediction_shadow_map,
+            ),
+            (
+                candidate_source_map.get(ranking.prospect.id)
+                if candidate_source_map and ranking.prospect.id is not None
+                else None
             ),
         )
         for ranking in rankings
@@ -343,6 +351,66 @@ def _prediction_shadow_map_for_rankings(
         )
         for prospect_id, result, _final_score in scored
     }
+
+
+def _candidate_board_with_prediction_watchlist(
+    *,
+    rankings: list[ProspectRanking],
+    base_rankings: list[ProspectRanking],
+    team_projection_map: dict[int, TeamPickProjection] | None,
+    prediction_shadow_map: dict[int, tuple[PredictionCalibrationResult, int, int]] | None,
+    shadow_limit: int = 3,
+) -> tuple[list[ProspectRanking], dict[int, str]]:
+    """Return the normal candidate board plus prediction diagnostics watchlist.
+
+    The board keeps the original ranking order.  This is diagnostics-only:
+    it makes strong prediction signals visible without changing selected_player,
+    alternatives, final_score, fit_score, or the ranking engine order.
+    """
+    candidate_source_map: dict[int, str] = {}
+    board: list[ProspectRanking] = []
+    included_ids: set[int] = set()
+
+    for ranking in base_rankings:
+        prospect_id = ranking.prospect.id
+        if prospect_id is None or prospect_id in included_ids:
+            continue
+        included_ids.add(prospect_id)
+        candidate_source_map[prospect_id] = "ranking_top"
+        board.append(ranking)
+
+    watch_ids: set[int] = set()
+    if team_projection_map:
+        watch_ids.update(team_projection_map.keys())
+    if prediction_shadow_map:
+        shadow_top_ids = [
+            prospect_id
+            for prospect_id, (_result, shadow_rank, _delta) in sorted(
+                prediction_shadow_map.items(),
+                key=lambda item: item[1][1],
+            )
+            if shadow_rank <= shadow_limit
+        ]
+        watch_ids.update(shadow_top_ids)
+
+    if not watch_ids:
+        return board, candidate_source_map
+
+    for ranking in rankings:
+        prospect_id = ranking.prospect.id
+        if prospect_id is None or prospect_id in included_ids:
+            continue
+        if prospect_id not in watch_ids:
+            continue
+        included_ids.add(prospect_id)
+        candidate_source_map[prospect_id] = (
+            "team_projection_match"
+            if team_projection_map and prospect_id in team_projection_map
+            else "prediction_shadow_top"
+        )
+        board.append(ranking)
+
+    return board, candidate_source_map
 
 
 def _scouting_tiebreaker_line(ranking: ProspectRanking) -> str | None:
@@ -633,6 +701,17 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
             override_rankings = [chosen_ranking] + [
                 r for r in rankings if r.prospect.id != chosen.id
             ]
+            candidate_rankings = override_rankings[:5]
+            candidate_source_map = None
+            if request.include_prediction_shadow:
+                candidate_rankings, candidate_source_map = (
+                    _candidate_board_with_prediction_watchlist(
+                        rankings=rankings,
+                        base_rankings=override_rankings[:5],
+                        team_projection_map=team_projection_map,
+                        prediction_shadow_map=prediction_shadow_map,
+                    )
+                )
             alternatives = override_rankings[1:4]
             trade_evaluation = evaluate_trade_market(
                 pick_no=draft_pick.pick_no,
@@ -681,10 +760,11 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                         prediction_shadow_map=prediction_shadow_map,
                     ),
                     candidate_board=_ranked_reads_with_projection(
-                        override_rankings[:5],
+                        candidate_rankings,
                         prospect_projection_map=prospect_projection_map,
                         team_projection_map=team_projection_map,
                         prediction_shadow_map=prediction_shadow_map,
+                        candidate_source_map=candidate_source_map,
                     ),
                     trade_evaluation=trade_evaluation,
                     decision_log=decision_log,
@@ -694,6 +774,17 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
             # ---- AUTO PICK BRANCH (v1) ----
             selected = rankings[0]
             alternatives = rankings[1:4]
+            candidate_rankings = rankings[:5]
+            candidate_source_map = None
+            if request.include_prediction_shadow:
+                candidate_rankings, candidate_source_map = (
+                    _candidate_board_with_prediction_watchlist(
+                        rankings=rankings,
+                        base_rankings=rankings[:5],
+                        team_projection_map=team_projection_map,
+                        prediction_shadow_map=prediction_shadow_map,
+                    )
+                )
             trade_evaluation = evaluate_trade_market(
                 pick_no=draft_pick.pick_no,
                 top_score=selected.final_score,
@@ -741,10 +832,11 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                         prediction_shadow_map=prediction_shadow_map,
                     ),
                     candidate_board=_ranked_reads_with_projection(
-                        rankings[:5],
+                        candidate_rankings,
                         prospect_projection_map=prospect_projection_map,
                         team_projection_map=team_projection_map,
                         prediction_shadow_map=prediction_shadow_map,
+                        candidate_source_map=candidate_source_map,
                     ),
                     trade_evaluation=trade_evaluation,
                     decision_log=decision_log,

@@ -52,6 +52,7 @@ class RankedProspectRead(BaseModel):
     prediction_shadow_rank: int | None = None
     prediction_shadow_delta: int | None = None
     prediction_calibration_notes: list[str] | None = None
+    candidate_source: str | None = None
 
 
 class RecommendResponse(BaseModel):
