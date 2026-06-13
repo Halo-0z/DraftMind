@@ -20,6 +20,42 @@ export type TeamPick = {
   notes: string | null;
 };
 
+export type TeamNeedProfile = {
+  id: number;
+  team_id: number;
+  year: number;
+  horizon: string;
+  source: string;
+  need_confidence: number;
+  need_center?: number | null;
+  need_rim_protection?: number | null;
+  need_defensive_rebounding?: number | null;
+  need_spacing?: number | null;
+  need_shooting_volume?: number | null;
+  need_self_creation?: number | null;
+  need_point_of_attack_defense?: number | null;
+  need_nba_ready?: number | null;
+  need_upside?: number | null;
+  manual_override_reason?: string | null;
+};
+
+export type TeamNeedProfilePayload = {
+  team_id: number;
+  year: number;
+  horizon?: string;
+  need_center?: number;
+  need_rim_protection?: number;
+  need_defensive_rebounding?: number;
+  need_spacing?: number;
+  need_shooting_volume?: number;
+  need_self_creation?: number;
+  need_point_of_attack_defense?: number;
+  need_nba_ready?: number;
+  need_upside?: number;
+  need_confidence?: number;
+  manual_override_reason?: string;
+};
+
 export type RosterPlayer = {
   id: number;
   season: string;
@@ -222,6 +258,46 @@ export function getTeamPicks(
   return request<TeamPick[]>(
     `/api/teams/${teamId}/picks?year=${year}`,
   );
+}
+
+export async function getTeamScoutingProfile(
+  teamId: number,
+  year: number,
+  horizon = "next_season",
+): Promise<TeamNeedProfile | null> {
+  const query = new URLSearchParams({
+    team_id: String(teamId),
+    year: String(year),
+    horizon,
+  });
+  const response = await fetch(
+    `${API_BASE_URL}/api/scouting/team-profiles?${query.toString()}`,
+    {
+      headers: {
+        "Content-Type": "application/json",
+      },
+    },
+  );
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Request failed with ${response.status}`);
+  }
+
+  return response.json() as Promise<TeamNeedProfile>;
+}
+
+export function saveTeamScoutingProfile(
+  payload: TeamNeedProfilePayload,
+): Promise<TeamNeedProfile> {
+  return request<TeamNeedProfile>("/api/scouting/team-profiles", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function getProspects(year = 2026): Promise<Prospect[]> {

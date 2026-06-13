@@ -6,6 +6,7 @@ import {
   askAgent,
   getProspects,
   getRecommendation,
+  getTeamScoutingProfile,
   getTeamPicks,
   getTeamRoster,
   getTeams,
@@ -18,10 +19,13 @@ import {
   RosterPlayer,
   ScoreBreakdown,
   searchNews,
+  saveTeamScoutingProfile,
   simulateDraft,
   Simulation,
   SimulatedPick,
   Team,
+  TeamNeedProfile,
+  TeamNeedProfilePayload,
   TeamPick,
 } from "@/lib/api";
 
@@ -102,6 +106,50 @@ const SCOUTING_LABELS: Record<string, string> = {
   size_risk: "尺寸/对抗风险",
 };
 
+const TEAM_PROFILE_FIELDS = [
+  { key: "need_center", label: "中锋深度" },
+  { key: "need_rim_protection", label: "护框" },
+  { key: "need_defensive_rebounding", label: "防守篮板" },
+  { key: "need_spacing", label: "空间" },
+  { key: "need_shooting_volume", label: "三分产量" },
+  { key: "need_self_creation", label: "持球创造" },
+  { key: "need_point_of_attack_defense", label: "外线领防" },
+  { key: "need_nba_ready", label: "即战力" },
+  { key: "need_upside", label: "长期上限" },
+] as const;
+
+type TeamProfileFieldKey = (typeof TEAM_PROFILE_FIELDS)[number]["key"];
+type TeamProfileForm = Record<TeamProfileFieldKey, string>;
+
+const EMPTY_TEAM_PROFILE_FORM: TeamProfileForm = {
+  need_center: "",
+  need_rim_protection: "",
+  need_defensive_rebounding: "",
+  need_spacing: "",
+  need_shooting_volume: "",
+  need_self_creation: "",
+  need_point_of_attack_defense: "",
+  need_nba_ready: "",
+  need_upside: "",
+};
+
+function teamProfileToForm(profile: TeamNeedProfile | null): TeamProfileForm {
+  if (!profile) {
+    return { ...EMPTY_TEAM_PROFILE_FORM };
+  }
+
+  return TEAM_PROFILE_FIELDS.reduce<TeamProfileForm>(
+    (form, { key }) => ({
+      ...form,
+      [key]:
+        profile[key] === null || profile[key] === undefined
+          ? ""
+          : String(profile[key]),
+    }),
+    { ...EMPTY_TEAM_PROFILE_FORM },
+  );
+}
+
 function scoutingLabel(key: string): string {
   return SCOUTING_LABELS[key] ?? key.replaceAll("_", " ");
 }
@@ -130,6 +178,15 @@ export default function DraftPage() {
   const [showScoutingDiagnostics, setShowScoutingDiagnostics] = useState(false);
   const [useScoutingTiebreaker, setUseScoutingTiebreaker] = useState(false);
   const [news, setNews] = useState<NewsArticle[]>([]);
+  const [teamProfile, setTeamProfile] = useState<TeamNeedProfile | null>(null);
+  const [teamProfileForm, setTeamProfileForm] = useState<TeamProfileForm>(
+    EMPTY_TEAM_PROFILE_FORM,
+  );
+  const [teamProfileReason, setTeamProfileReason] = useState("");
+  const [isTeamProfileLoading, setIsTeamProfileLoading] = useState(false);
+  const [isTeamProfileSaving, setIsTeamProfileSaving] = useState(false);
+  const [teamProfileStatus, setTeamProfileStatus] = useState<string | null>(null);
+  const [teamProfileError, setTeamProfileError] = useState<string | null>(null);
   // Phase 3: locked-picks / user-override.  Each entry is one row in
   // the sidebar UI.  prospect_id is required for the MVP dropdown;
   // prospect_name is left null and is not exposed in this version.
@@ -204,6 +261,52 @@ export default function DraftPage() {
 
   useEffect(() => {
     if (teamId === null) {
+      setTeamProfile(null);
+      setTeamProfileForm({ ...EMPTY_TEAM_PROFILE_FORM });
+      setTeamProfileReason("");
+      setTeamProfileStatus(null);
+      setTeamProfileError(null);
+      return;
+    }
+
+    let isMounted = true;
+    setIsTeamProfileLoading(true);
+    setTeamProfileStatus(null);
+    setTeamProfileError(null);
+
+    getTeamScoutingProfile(teamId, 2026, "next_season")
+      .then((profile) => {
+        if (!isMounted) {
+          return;
+        }
+        setTeamProfile(profile);
+        setTeamProfileForm(teamProfileToForm(profile));
+        setTeamProfileReason(profile?.manual_override_reason ?? "");
+        setTeamProfileStatus(
+          profile ? null : "尚未创建 profile，保存后会创建 manual profile。",
+        );
+      })
+      .catch(() => {
+        if (isMounted) {
+          setTeamProfile(null);
+          setTeamProfileForm({ ...EMPTY_TEAM_PROFILE_FORM });
+          setTeamProfileReason("");
+          setTeamProfileError("加载球队球探需求 Profile 失败。");
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsTeamProfileLoading(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [teamId]);
+
+  useEffect(() => {
+    if (teamId === null) {
       setRoster([]);
       return;
     }
@@ -272,6 +375,63 @@ export default function DraftPage() {
     [teamPicks, pick],
   );
   const simulationPickLimit = simulationRounds === 1 ? 30 : 60;
+
+  function updateTeamProfileField(key: TeamProfileFieldKey, value: string) {
+    setTeamProfileForm((form) => ({
+      ...form,
+      [key]: value,
+    }));
+    setTeamProfileStatus(null);
+    setTeamProfileError(null);
+  }
+
+  async function handleSaveTeamProfile() {
+    if (teamId === null) {
+      setTeamProfileError("请选择球队。");
+      return;
+    }
+
+    const payload: TeamNeedProfilePayload = {
+      team_id: teamId,
+      year: 2026,
+      horizon: "next_season",
+      need_confidence: 1.0,
+    };
+
+    for (const { key, label } of TEAM_PROFILE_FIELDS) {
+      const rawValue = teamProfileForm[key].trim();
+      if (rawValue.length === 0) {
+        continue;
+      }
+      const value = Number(rawValue);
+      if (!Number.isFinite(value) || value < 1 || value > 10) {
+        setTeamProfileError(`${label} 必须在 1-10 之间，或留空。`);
+        return;
+      }
+      (payload as Record<TeamProfileFieldKey, number | undefined>)[key] = value;
+    }
+
+    const trimmedReason = teamProfileReason.trim();
+    if (trimmedReason.length > 0) {
+      payload.manual_override_reason = trimmedReason;
+    }
+
+    setIsTeamProfileSaving(true);
+    setTeamProfileError(null);
+    setTeamProfileStatus(null);
+
+    try {
+      const saved = await saveTeamScoutingProfile(payload);
+      setTeamProfile(saved);
+      setTeamProfileForm(teamProfileToForm(saved));
+      setTeamProfileReason(saved.manual_override_reason ?? "");
+      setTeamProfileStatus("已保存 manual profile。");
+    } catch (err) {
+      setTeamProfileError(formatApiError(err, "保存球队球探需求 Profile 失败。"));
+    } finally {
+      setIsTeamProfileSaving(false);
+    }
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -618,6 +778,24 @@ export default function DraftPage() {
               </div>
             </div>
           </div>
+
+          <TeamScoutingProfileEditor
+            error={teamProfileError}
+            form={teamProfileForm}
+            isLoading={isTeamProfileLoading}
+            isSaving={isTeamProfileSaving}
+            onFieldChange={updateTeamProfileField}
+            onReasonChange={(value) => {
+              setTeamProfileReason(value);
+              setTeamProfileStatus(null);
+              setTeamProfileError(null);
+            }}
+            onSave={handleSaveTeamProfile}
+            profile={teamProfile}
+            reason={teamProfileReason}
+            status={teamProfileStatus}
+            team={selectedTeam}
+          />
 
           <RosterPanel isLoading={isLoadingRoster} roster={roster} />
 
@@ -1111,6 +1289,119 @@ function AgentPanel({
           ) : null}
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function TeamScoutingProfileEditor({
+  error,
+  form,
+  isLoading,
+  isSaving,
+  onFieldChange,
+  onReasonChange,
+  onSave,
+  profile,
+  reason,
+  status,
+  team,
+}: {
+  error: string | null;
+  form: TeamProfileForm;
+  isLoading: boolean;
+  isSaving: boolean;
+  onFieldChange: (key: TeamProfileFieldKey, value: string) => void;
+  onReasonChange: (value: string) => void;
+  onSave: () => void;
+  profile: TeamNeedProfile | null;
+  reason: string;
+  status: string | null;
+  team: Team | null;
+}) {
+  return (
+    <section className="mt-5 rounded-md border border-white/10 bg-court-panel p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.18em] text-court-muted">
+            Team scouting needs
+          </p>
+          <h2 className="mt-2 text-lg font-black">球队球探需求 Profile</h2>
+        </div>
+        {profile ? (
+          <div className="text-right text-xs font-bold text-court-muted">
+            <p className="text-court-line">{profile.source}</p>
+            <p>{Math.round(profile.need_confidence * 100)}% confidence</p>
+          </div>
+        ) : null}
+      </div>
+
+      <p className="mt-3 text-xs leading-5 text-court-muted">
+        这些需求只会用于 scouting fit 诊断和显式开启的同档适配打破平局；不会直接改写 final_score。
+      </p>
+      <p className="mt-2 text-xs leading-5 text-court-muted">
+        Profile 会影响球探适配标签；只有启用“同档适配打破平局”时，才可能影响同档小分差选择。
+      </p>
+
+      {isLoading ? (
+        <p className="mt-4 rounded-md border border-white/10 bg-court-black/60 px-3 py-3 text-sm text-court-muted">
+          正在读取 {team?.abbr ?? "球队"} profile...
+        </p>
+      ) : (
+        <div className="mt-4 grid gap-4">
+          <div className="grid grid-cols-2 gap-3">
+            {TEAM_PROFILE_FIELDS.map(({ key, label }) => (
+              <label
+                className="block text-xs font-bold text-court-muted"
+                key={key}
+              >
+                {label}
+                <input
+                  className="mt-1 h-10 w-full rounded-md border border-white/10 bg-court-black px-3 text-sm font-black text-court-text outline-none transition placeholder:text-court-muted focus:border-court-line"
+                  inputMode="decimal"
+                  max={10}
+                  min={1}
+                  placeholder="1-10"
+                  type="number"
+                  value={form[key]}
+                  onChange={(event) => onFieldChange(key, event.target.value)}
+                />
+              </label>
+            ))}
+          </div>
+
+          <label className="block text-xs font-bold text-court-muted">
+            手动说明
+            <textarea
+              className="mt-1 min-h-20 w-full resize-y rounded-md border border-white/10 bg-court-black px-3 py-2 text-sm font-semibold leading-6 text-court-text outline-none transition placeholder:text-court-muted focus:border-court-line"
+              maxLength={500}
+              placeholder="例如：manual profile: contender needing rim protection, rebounding, spacing, and NBA-ready contributors."
+              value={reason}
+              onChange={(event) => onReasonChange(event.target.value)}
+            />
+          </label>
+
+          {status ? (
+            <p className="rounded-md border border-court-line/30 bg-court-line/10 px-3 py-2 text-xs leading-5 text-court-line">
+              {status}
+            </p>
+          ) : null}
+
+          {error ? (
+            <p className="rounded-md border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-200">
+              {error}
+            </p>
+          ) : null}
+
+          <button
+            className="h-11 rounded-md border border-court-line/50 bg-court-black px-4 text-sm font-black text-court-line transition hover:border-court-line hover:bg-court-line hover:text-court-black disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isSaving || team === null}
+            onClick={onSave}
+            type="button"
+          >
+            {isSaving ? "保存中..." : "保存 Profile"}
+          </button>
+        </div>
+      )}
     </section>
   );
 }
