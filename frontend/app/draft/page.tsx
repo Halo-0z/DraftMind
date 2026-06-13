@@ -266,8 +266,13 @@ export default function DraftPage() {
   const [simulationRounds, setSimulationRounds] = useState<1 | 2>(1);
   const [showScoutingDiagnostics, setShowScoutingDiagnostics] = useState(false);
   const [useScoutingTiebreaker, setUseScoutingTiebreaker] = useState(false);
-  const [showPredictionShadow, setShowPredictionShadow] = useState(false);
-  const [usePredictionCalibration, setUsePredictionCalibration] = useState(false);
+  // Phase 6B: default DraftMind into "real draft prediction" mode — show
+  // the prediction shadow and let predictions actually inform the
+  // simulation.  These are *frontend* defaults only; the backend
+  // SimulateRequest default for use_prediction_calibration stays False
+  // for backwards compatibility.
+  const [showPredictionShadow, setShowPredictionShadow] = useState(true);
+  const [usePredictionCalibration, setUsePredictionCalibration] = useState(true);
   const [news, setNews] = useState<NewsArticle[]>([]);
   const [teamProfile, setTeamProfile] = useState<TeamNeedProfile | null>(null);
   const [teamProfileForm, setTeamProfileForm] = useState<TeamProfileForm>(
