@@ -192,7 +192,16 @@ function percent(value: number | null | undefined): string | null {
 }
 
 function formatProjectionSource(source: string): string {
-  return source.replaceAll("_", " ");
+  const labels: Record<string, string> = {
+    manual_projection: "手动预测",
+    seed_projection: "示例预测",
+    consensus_reference: "媒体参考",
+    manual_prediction: "手动倾向",
+    team_report: "球队报道",
+    workout_signal: "试训信号",
+    consensus_mock: "媒体模拟",
+  };
+  return labels[source] ?? source.replaceAll("_", " ");
 }
 
 function formatShadowDelta(delta: number | null | undefined): string | null {
@@ -958,7 +967,7 @@ export default function DraftPage() {
 
             <div className="mt-5 rounded-md border border-white/10 bg-court-black/55 p-4">
               <p className="text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
-                预测校准
+                预测信息
               </p>
               <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-md border border-sky-300/20 bg-sky-300/[0.035] p-3 transition hover:border-sky-300/50">
                 <input
@@ -967,15 +976,15 @@ export default function DraftPage() {
                   onChange={(event) => setShowPredictionShadow(event.target.checked)}
                   type="checkbox"
                 />
-                <span>
-                  <span className="block text-sm font-black text-court-text">
-                    显示预测影子分
+                  <span>
+                    <span className="block text-sm font-black text-court-text">
+                    显示预测参考
+                    </span>
+                    <span className="mt-1 block text-xs leading-5 text-court-muted">
+                    只显示预测顺位、选秀区间和球队倾向，帮助你判断模型为什么这么排；不会改变模拟选人结果。
+                    </span>
                   </span>
-                  <span className="mt-1 block text-xs leading-5 text-court-muted">
-                    展示 market projection、team signal 和 shadow rank；影子分只用于观察预测校准方向，不改变当前 selected_player。
-                  </span>
-                </span>
-              </label>
+                </label>
               <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-md border border-fuchsia-300/25 bg-fuchsia-300/[0.04] p-3 transition hover:border-fuchsia-300/55">
                 <input
                   checked={usePredictionCalibration}
@@ -989,15 +998,15 @@ export default function DraftPage() {
                   }}
                   type="checkbox"
                 />
-                <span>
-                  <span className="block text-sm font-black text-court-text">
-                    Use prediction-calibrated selection
+                  <span>
+                    <span className="block text-sm font-black text-court-text">
+                    用预测信息辅助选人
+                    </span>
+                    <span className="mt-1 block text-xs leading-5 text-court-muted">
+                    打开后，系统会把预测顺位、选秀区间和球队倾向纳入自动选人；关闭时仍按原评分选人。它不会直接照搬媒体模拟榜。
+                    </span>
                   </span>
-                  <span className="mt-1 block text-xs leading-5 text-court-muted">
-                    默认关闭。打开后会用 projection、expected range 和 team signal 影响 selected_player；这不是 consensus lock。
-                  </span>
-                </span>
-              </label>
+                </label>
             </div>
 
             {/* Phase 3: locked picks / user override editor.
@@ -1665,6 +1674,7 @@ function ProjectionPredictionDiagnostics({
     0,
     compact ? 1 : 3,
   );
+  const uniqueNotes = Array.from(new Set(notes));
 
   return (
     <div
@@ -1678,10 +1688,10 @@ function ProjectionPredictionDiagnostics({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-[11px] font-black uppercase tracking-[0.16em] text-sky-200">
-              Projection shadow
+              预测参考
             </p>
             <p className="mt-1 text-xs leading-5 text-court-muted">
-              Projection 是预测信号，不是最终答案；影子分不会改变当前 selected_player。
+              预测参考只展示顺位区间和球队倾向，不会改变模拟选人结果。
             </p>
           </div>
         {hasPredictionShadow(player) ? (
@@ -1692,7 +1702,7 @@ function ProjectionPredictionDiagnostics({
           {player.prediction_sort_score !== undefined &&
           player.prediction_sort_score !== null ? (
             <span className="rounded-md border border-fuchsia-300/30 bg-fuchsia-300/10 px-2 py-1 text-xs font-black text-fuchsia-100">
-              Prediction sort {player.prediction_sort_score.toFixed(1)}
+              预测辅助分 {player.prediction_sort_score.toFixed(1)}
             </span>
           ) : null}
         </div>
@@ -1701,22 +1711,22 @@ function ProjectionPredictionDiagnostics({
       <div className="flex flex-wrap items-center gap-1.5">
         {player.projection_expected_pick ? (
           <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
-            Expected #{player.projection_expected_pick}
+            预测顺位 #{player.projection_expected_pick}
           </span>
         ) : null}
         {player.projection_draft_range_min && player.projection_draft_range_max ? (
           <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
-            Range {player.projection_draft_range_min}-{player.projection_draft_range_max}
+            选秀区间 {player.projection_draft_range_min}-{player.projection_draft_range_max}
           </span>
         ) : null}
         {player.projection_tier ? (
           <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
-            Tier {player.projection_tier}
+            档位 {player.projection_tier}
           </span>
         ) : null}
         {confidence ? (
           <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
-            Projection {confidence}
+            预测可信度 {confidence}
           </span>
         ) : null}
         {player.projection_source ? (
@@ -1726,13 +1736,13 @@ function ProjectionPredictionDiagnostics({
         ) : null}
         {player.team_projection_type ? (
           <span className="inline-flex items-center rounded-md border border-sky-300/30 bg-sky-300/10 px-2 py-1 text-[11px] font-black text-sky-100">
-            Team signal {formatProjectionSource(player.team_projection_type)}
+            球队倾向 {formatProjectionSource(player.team_projection_type)}
             {teamConfidence ? ` · ${teamConfidence}` : ""}
           </span>
         ) : null}
         {player.prediction_shadow_rank ? (
           <span className="inline-flex items-center rounded-md border border-court-line/30 bg-court-line/10 px-2 py-1 text-[11px] font-black text-court-line">
-            Shadow rank #{player.prediction_shadow_rank}
+            参考排序 #{player.prediction_shadow_rank}
           </span>
         ) : null}
         {shadowDelta ? (
@@ -1742,19 +1752,19 @@ function ProjectionPredictionDiagnostics({
                 ? "border-court-line/30 bg-court-line/10 text-court-line"
                 : "border-amber-300/30 bg-amber-300/10 text-amber-100"
             }`}
-            title="+3 means shadow ranking is 3 spots higher than the original candidate order."
+            title="+3 表示参考排序比原候选排序高 3 位。"
           >
-            Delta {shadowDelta}
+            排序变化 {shadowDelta}
           </span>
         ) : null}
         {player.prediction_selection_rank ? (
           <span className="inline-flex items-center rounded-md border border-fuchsia-300/30 bg-fuchsia-300/10 px-2 py-1 text-[11px] font-black text-fuchsia-100">
-            Prediction rank #{player.prediction_selection_rank}
+            预测排序 #{player.prediction_selection_rank}
           </span>
         ) : null}
         {player.prediction_selection_applied ? (
           <span className="inline-flex items-center rounded-md border border-fuchsia-300/40 bg-fuchsia-300/15 px-2 py-1 text-[11px] font-black text-fuchsia-100">
-            预测校准选中
+            本次因预测信息被选中
           </span>
         ) : null}
       </div>
@@ -1763,29 +1773,29 @@ function ProjectionPredictionDiagnostics({
       player.prediction_sort_score !== undefined &&
       player.prediction_sort_score !== null ? (
         <p className="mt-2 text-[11px] leading-5 text-court-muted">
-          Prediction sort 是显式预测校准模式的排序键，不会改写 final_score。
+          预测辅助分只用于“用预测信息辅助选人”模式，不会改写原始评分。
         </p>
       ) : null}
 
       {!compact && hasPredictionShadow(player) ? (
         <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-court-muted sm:grid-cols-4">
-          <span>Range {player.prediction_range_score?.toFixed(1) ?? "--"}</span>
-          <span>Tier {player.prediction_tier_score?.toFixed(1) ?? "--"}</span>
+          <span>区间 {player.prediction_range_score?.toFixed(1) ?? "--"}</span>
+          <span>档位 {player.prediction_tier_score?.toFixed(1) ?? "--"}</span>
           <span>
-            Team {player.prediction_team_projection_score?.toFixed(1) ?? "--"}
+            球队 {player.prediction_team_projection_score?.toFixed(1) ?? "--"}
           </span>
           <span>
-            Weight {percent(player.prediction_confidence_weight) ?? "--"}
+            权重 {percent(player.prediction_confidence_weight) ?? "--"}
           </span>
         </div>
       ) : null}
 
-      {notes.length > 0 ? (
+      {uniqueNotes.length > 0 ? (
         <div className="flex flex-wrap items-center gap-1.5">
-          {notes.map((note) => (
+          {uniqueNotes.map((note, index) => (
             <span
               className="inline-flex items-center rounded-md border border-sky-300/20 bg-sky-300/[0.06] px-2 py-1 text-[11px] font-bold text-sky-100"
-              key={note}
+              key={`${note}-${index}`}
             >
               {note}
             </span>
