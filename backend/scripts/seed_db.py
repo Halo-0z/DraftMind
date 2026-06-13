@@ -14,12 +14,14 @@ from app.database import Base, SessionLocal, engine
 from app.models import (
     DraftOrder,
     Prospect,
+    ProspectDraftProjection,
     ProspectScoutingProfile,
     Roster,
     ScoutingReport,
     Team,
     TeamNeed,
     TeamNeedProfile,
+    TeamPickProjection,
 )
 
 
@@ -342,6 +344,23 @@ PROSPECTS = [
     ("Sidi Gueye", "SF", 19.5, "6-8", 205, "G League Ignite", 11.9, 6.7, 2.0, 45.5, 32.2, 72.6, 2.3, "Long defensive wing", 70, 41),
 ]
 
+TEAM_PICK_PROJECTION_SEEDS = [
+    (1, "WAS", "AJ Dybantsa", "consensus_mock", 0.64),
+    (2, "DET", "Cameron Boozer", "consensus_mock", 0.62),
+    (3, "POR", "Darryn Peterson", "consensus_mock", 0.61),
+    (4, "SAS", "Mikel Brown Jr.", "team_report", 0.58),
+    (5, "HOU", "Nate Ament", "consensus_mock", 0.57),
+    (8, "POR", "Tounde Yessoufou", "manual_prediction", 0.54),
+    (10, "HOU", "Jayden Quaintance", "workout_signal", 0.52),
+]
+
+PROSPECT_PROJECTION_NOTE = (
+    "Demo seed projection signal for DraftMind development; not official."
+)
+TEAM_PICK_PROJECTION_NOTE = (
+    "Demo seed team-pick projection signal; not official."
+)
+
 MOCK_ROSTERS = {
     "SAS": [
         ("Victor Wembanyama", "C-F", 22.0, "7-4", 235, "1", "2", "France"),
@@ -425,6 +444,26 @@ def seed_demo_data(db: Session) -> None:
         db.flush()
         _upsert_scouting_report(db, prospect, index)
         _upsert_prospect_scouting_profile(db, prospect)
+        _upsert_prospect_draft_projection(db, prospect, index)
+
+    prospects_by_name = {
+        prospect.name: prospect
+        for prospect in db.query(Prospect).filter(Prospect.year == 2026).all()
+    }
+    for pick_no, abbr, prospect_name, projection_type, confidence in TEAM_PICK_PROJECTION_SEEDS:
+        team = teams_by_abbr.get(abbr)
+        prospect = prospects_by_name.get(prospect_name)
+        if team is None or prospect is None:
+            continue
+        _upsert_team_pick_projection(
+            db,
+            year=2026,
+            pick_no=pick_no,
+            team_id=team.id,
+            prospect_id=prospect.id,
+            projection_type=projection_type,
+            confidence=confidence,
+        )
 
     db.flush()
 
@@ -616,6 +655,105 @@ def _upsert_prospect_scouting_profile(
     else:
         _assign_attrs(profile, payload)
     return profile
+
+
+def _projection_range_for_index(board_index: int) -> tuple[int, int]:
+    if board_index <= 3:
+        return 1, 5
+    if board_index <= 7:
+        return max(1, board_index - 2), board_index + 4
+    if board_index <= 14:
+        return board_index - 3, board_index + 6
+    return board_index - 4, min(60, board_index + 8)
+
+
+def _projection_tier_for_index(board_index: int) -> int:
+    if board_index <= 3:
+        return 1
+    if board_index <= 7:
+        return 2
+    if board_index <= 14:
+        return 3
+    if board_index <= 20:
+        return 4
+    return 5
+
+
+def _upsert_prospect_draft_projection(
+    db: Session,
+    prospect: Prospect,
+    board_index: int,
+) -> ProspectDraftProjection:
+    projection = (
+        db.query(ProspectDraftProjection)
+        .filter_by(
+            prospect_id=prospect.id,
+            year=prospect.year,
+            source="seed_projection",
+        )
+        .first()
+    )
+    range_min, range_max = _projection_range_for_index(board_index)
+    payload = {
+        "prospect_id": prospect.id,
+        "year": prospect.year,
+        "consensus_rank": board_index,
+        "big_board_rank": board_index,
+        "expected_pick": board_index,
+        "draft_range_min": range_min,
+        "draft_range_max": range_max,
+        "tier": _projection_tier_for_index(board_index),
+        "source": "seed_projection",
+        "source_count": 3,
+        "confidence": max(0.5, round(0.72 - board_index * 0.006, 2)),
+        "notes": PROSPECT_PROJECTION_NOTE,
+    }
+    if projection is None:
+        projection = ProspectDraftProjection(**payload)
+        db.add(projection)
+    elif projection.source == "seed_projection":
+        _assign_attrs(projection, payload)
+    return projection
+
+
+def _upsert_team_pick_projection(
+    db: Session,
+    *,
+    year: int,
+    pick_no: int,
+    team_id: int,
+    prospect_id: int,
+    projection_type: str,
+    confidence: float,
+) -> TeamPickProjection:
+    projection = (
+        db.query(TeamPickProjection)
+        .filter_by(
+            year=year,
+            pick_no=pick_no,
+            team_id=team_id,
+            prospect_id=prospect_id,
+            projection_type=projection_type,
+            source="seed_projection",
+        )
+        .first()
+    )
+    payload = {
+        "year": year,
+        "pick_no": pick_no,
+        "team_id": team_id,
+        "prospect_id": prospect_id,
+        "projection_type": projection_type,
+        "source": "seed_projection",
+        "confidence": confidence,
+        "notes": TEAM_PICK_PROJECTION_NOTE,
+    }
+    if projection is None:
+        projection = TeamPickProjection(**payload)
+        db.add(projection)
+    elif projection.source == "seed_projection":
+        _assign_attrs(projection, payload)
+    return projection
 
 
 def _build_seed_team_need_profile(abbr: str, needs: dict[str, int]) -> dict[str, Any]:
