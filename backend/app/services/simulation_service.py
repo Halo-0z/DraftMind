@@ -20,6 +20,10 @@ from app.schemas.simulation import (
     TradeEvaluation,
 )
 from app.services.ranking_engine import ProspectRanking, rank_prospects
+from app.services.prediction_calibration import (
+    PredictionCalibrationResult,
+    calculate_prediction_calibration,
+)
 from app.services.team_need_adjustment import (
     TeamNeedSnapshot,
     adjust_team_need_after_pick,
@@ -45,6 +49,9 @@ TEAM_PROJECTION_TYPE_PRIORITY = {
 class ProjectionDiagnostics:
     prospect_projection: ProspectDraftProjection | None = None
     team_projection: TeamPickProjection | None = None
+    prediction_calibration: PredictionCalibrationResult | None = None
+    prediction_shadow_rank: int | None = None
+    prediction_shadow_delta: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +80,9 @@ def _to_ranked_read(
 ) -> RankedProspectRead:
     prospect_projection = projection.prospect_projection if projection else None
     team_projection = projection.team_projection if projection else None
+    prediction_calibration = (
+        projection.prediction_calibration if projection else None
+    )
     return RankedProspectRead(
         prospect=ranking.prospect,
         scores=ScoreBreakdown(
@@ -112,6 +122,32 @@ def _to_ranked_read(
             team_projection.confidence if team_projection else None
         ),
         team_projection_notes=team_projection.notes if team_projection else None,
+        prediction_range_score=(
+            prediction_calibration.range_score if prediction_calibration else None
+        ),
+        prediction_tier_score=(
+            prediction_calibration.tier_score if prediction_calibration else None
+        ),
+        prediction_team_projection_score=(
+            prediction_calibration.team_projection_score
+            if prediction_calibration else None
+        ),
+        prediction_confidence_weight=(
+            prediction_calibration.confidence_weight
+            if prediction_calibration else None
+        ),
+        prediction_shadow_score=(
+            prediction_calibration.shadow_score if prediction_calibration else None
+        ),
+        prediction_shadow_rank=(
+            projection.prediction_shadow_rank if projection else None
+        ),
+        prediction_shadow_delta=(
+            projection.prediction_shadow_delta if projection else None
+        ),
+        prediction_calibration_notes=(
+            prediction_calibration.notes if prediction_calibration else None
+        ),
     )
 
 
@@ -216,6 +252,7 @@ def _projection_for_ranking(
     *,
     prospect_projection_map: dict[int, ProspectDraftProjection] | None,
     team_projection_map: dict[int, TeamPickProjection] | None,
+    prediction_shadow_map: dict[int, tuple[PredictionCalibrationResult, int, int]] | None = None,
 ) -> ProjectionDiagnostics | None:
     prospect_id = ranking.prospect.id
     if prospect_id is None:
@@ -226,11 +263,15 @@ def _projection_for_ranking(
     team_projection = (
         team_projection_map.get(prospect_id) if team_projection_map else None
     )
-    if prospect_projection is None and team_projection is None:
+    shadow = prediction_shadow_map.get(prospect_id) if prediction_shadow_map else None
+    if prospect_projection is None and team_projection is None and shadow is None:
         return None
     return ProjectionDiagnostics(
         prospect_projection=prospect_projection,
         team_projection=team_projection,
+        prediction_calibration=shadow[0] if shadow else None,
+        prediction_shadow_rank=shadow[1] if shadow else None,
+        prediction_shadow_delta=shadow[2] if shadow else None,
     )
 
 
@@ -239,6 +280,7 @@ def _ranked_reads_with_projection(
     *,
     prospect_projection_map: dict[int, ProspectDraftProjection] | None,
     team_projection_map: dict[int, TeamPickProjection] | None,
+    prediction_shadow_map: dict[int, tuple[PredictionCalibrationResult, int, int]] | None = None,
 ) -> list[RankedProspectRead]:
     return [
         _to_ranked_read(
@@ -247,10 +289,60 @@ def _ranked_reads_with_projection(
                 ranking,
                 prospect_projection_map=prospect_projection_map,
                 team_projection_map=team_projection_map,
+                prediction_shadow_map=prediction_shadow_map,
             ),
         )
         for ranking in rankings
     ]
+
+
+def _prediction_shadow_map_for_rankings(
+    rankings: list[ProspectRanking],
+    *,
+    pick_no: int,
+    prospect_projection_map: dict[int, ProspectDraftProjection] | None,
+    team_projection_map: dict[int, TeamPickProjection] | None,
+) -> dict[int, tuple[PredictionCalibrationResult, int, int]]:
+    original_positions: dict[int, int] = {}
+    scored: list[tuple[int, PredictionCalibrationResult, float]] = []
+    for index, ranking in enumerate(rankings, start=1):
+        prospect_id = ranking.prospect.id
+        if prospect_id is None:
+            continue
+        original_positions[prospect_id] = index
+        result = calculate_prediction_calibration(
+            pick_no=pick_no,
+            ranking=ranking,
+            prospect_projection=(
+                prospect_projection_map.get(prospect_id)
+                if prospect_projection_map else None
+            ),
+            team_projection=(
+                team_projection_map.get(prospect_id)
+                if team_projection_map else None
+            ),
+        )
+        scored.append((prospect_id, result, ranking.final_score))
+
+    shadow_positions: dict[int, int] = {}
+    for shadow_rank, (prospect_id, _result, _final_score) in enumerate(
+        sorted(
+            scored,
+            key=lambda item: (item[1].shadow_score, item[2]),
+            reverse=True,
+        ),
+        start=1,
+    ):
+        shadow_positions[prospect_id] = shadow_rank
+
+    return {
+        prospect_id: (
+            result,
+            shadow_positions[prospect_id],
+            original_positions[prospect_id] - shadow_positions[prospect_id],
+        )
+        for prospect_id, result, _final_score in scored
+    }
 
 
 def _scouting_tiebreaker_line(ranking: ProspectRanking) -> str | None:
@@ -490,7 +582,12 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
         )
         prospect_projection_map = None
         team_projection_map = None
-        if request.include_projection_diagnostics:
+        prediction_shadow_map = None
+        include_projection_context = (
+            request.include_projection_diagnostics
+            or request.include_prediction_shadow
+        )
+        if include_projection_context:
             prospect_projection_map = _load_prospect_draft_projection_map(
                 db=db,
                 year=request.year,
@@ -501,6 +598,13 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                 year=request.year,
                 pick_no=draft_pick.pick_no,
                 team_id=draft_pick.team_id,
+            )
+        if request.include_prediction_shadow:
+            prediction_shadow_map = _prediction_shadow_map_for_rankings(
+                rankings,
+                pick_no=draft_pick.pick_no,
+                prospect_projection_map=prospect_projection_map,
+                team_projection_map=team_projection_map,
             )
 
         if draft_pick.pick_no in locked_prospects:
@@ -567,17 +671,20 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                             chosen_ranking,
                             prospect_projection_map=prospect_projection_map,
                             team_projection_map=team_projection_map,
+                            prediction_shadow_map=prediction_shadow_map,
                         ),
                     ),
                     alternatives=_ranked_reads_with_projection(
                         alternatives,
                         prospect_projection_map=prospect_projection_map,
                         team_projection_map=team_projection_map,
+                        prediction_shadow_map=prediction_shadow_map,
                     ),
                     candidate_board=_ranked_reads_with_projection(
                         override_rankings[:5],
                         prospect_projection_map=prospect_projection_map,
                         team_projection_map=team_projection_map,
+                        prediction_shadow_map=prediction_shadow_map,
                     ),
                     trade_evaluation=trade_evaluation,
                     decision_log=decision_log,
@@ -624,17 +731,20 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                             selected,
                             prospect_projection_map=prospect_projection_map,
                             team_projection_map=team_projection_map,
+                            prediction_shadow_map=prediction_shadow_map,
                         ),
                     ),
                     alternatives=_ranked_reads_with_projection(
                         alternatives,
                         prospect_projection_map=prospect_projection_map,
                         team_projection_map=team_projection_map,
+                        prediction_shadow_map=prediction_shadow_map,
                     ),
                     candidate_board=_ranked_reads_with_projection(
                         rankings[:5],
                         prospect_projection_map=prospect_projection_map,
                         team_projection_map=team_projection_map,
+                        prediction_shadow_map=prediction_shadow_map,
                     ),
                     trade_evaluation=trade_evaluation,
                     decision_log=decision_log,

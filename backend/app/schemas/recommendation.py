@@ -44,6 +44,14 @@ class RankedProspectRead(BaseModel):
     team_projection_type: str | None = None
     team_projection_confidence: float | None = None
     team_projection_notes: str | None = None
+    prediction_range_score: float | None = None
+    prediction_tier_score: float | None = None
+    prediction_team_projection_score: float | None = None
+    prediction_confidence_weight: float | None = None
+    prediction_shadow_score: float | None = None
+    prediction_shadow_rank: int | None = None
+    prediction_shadow_delta: int | None = None
+    prediction_calibration_notes: list[str] | None = None
 
 
 class RecommendResponse(BaseModel):

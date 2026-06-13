@@ -1915,7 +1915,12 @@ class TestScoutingTiebreakerOptIn:
         assert "locked by user override" in "\n".join(pick["decision_log"]).lower()
 
 
-def _base_projection_response(client: TestClient, *, include: bool = False) -> dict:
+def _base_projection_response(
+    client: TestClient,
+    *,
+    include: bool = False,
+    shadow: bool = False,
+) -> dict:
     response = client.post(
         "/api/simulate",
         json={
@@ -1923,6 +1928,7 @@ def _base_projection_response(client: TestClient, *, include: bool = False) -> d
             "rounds": 1,
             "limit": 1,
             "include_projection_diagnostics": include,
+            "include_prediction_shadow": shadow,
         },
     )
     assert response.status_code == 200
@@ -2168,4 +2174,266 @@ class TestProjectionDiagnostics:
         selected = pick["selected_player"]
         assert selected["prospect"]["name"] == "Braylon Mullins"
         assert selected["projection_expected_pick"] == 18
+        assert "locked by user override" in "\n".join(pick["decision_log"]).lower()
+
+
+class TestPredictionCalibrationShadow:
+    def test_default_request_has_no_prediction_shadow_fields(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        prospect = _prospect_by_name(db_session, "Mikel Brown Jr.")
+        db_session.add(
+            ProspectDraftProjection(
+                prospect_id=prospect.id,
+                year=2026,
+                expected_pick=2,
+                draft_range_min=1,
+                draft_range_max=4,
+                tier=1,
+                source="manual_projection",
+                confidence=0.9,
+                notes="Hidden unless shadow is requested.",
+            )
+        )
+        db_session.commit()
+
+        selected = _base_projection_response(client)["selected_player"]
+
+        assert selected["projection_expected_pick"] is None
+        assert selected["prediction_shadow_score"] is None
+        assert selected["prediction_shadow_rank"] is None
+
+    def test_prediction_shadow_does_not_change_selection_scores_or_trade(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        baseline = _base_projection_response(client)
+        baseline_selected = baseline["selected_player"]
+        baseline_board_names = [
+            candidate["prospect"]["name"] for candidate in baseline["candidate_board"]
+        ]
+        baseline_trade = baseline["trade_evaluation"]
+        selected_prospect = _prospect_by_name(
+            db_session,
+            baseline_selected["prospect"]["name"],
+        )
+        db_session.add(
+            ProspectDraftProjection(
+                prospect_id=selected_prospect.id,
+                year=2026,
+                expected_pick=2,
+                draft_range_min=1,
+                draft_range_max=4,
+                tier=1,
+                source="manual_projection",
+                confidence=0.95,
+                notes="Shadow signal only.",
+            )
+        )
+        db_session.commit()
+
+        with_shadow = _base_projection_response(client, shadow=True)
+        selected = with_shadow["selected_player"]
+
+        assert selected["prospect"]["id"] == baseline_selected["prospect"]["id"]
+        assert selected["scores"]["final_score"] == baseline_selected["scores"]["final_score"]
+        assert selected["scores"]["fit_score"] == baseline_selected["scores"]["fit_score"]
+        assert with_shadow["trade_evaluation"] == baseline_trade
+        assert [
+            candidate["prospect"]["name"]
+            for candidate in with_shadow["candidate_board"]
+        ] == baseline_board_names
+        assert selected["projection_expected_pick"] == 2
+        assert selected["prediction_shadow_score"] is not None
+        assert selected["prediction_shadow_rank"] is not None
+
+    def test_prediction_shadow_auto_includes_projection_diagnostics(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        prospect = _prospect_by_name(db_session, "Mikel Brown Jr.")
+        db_session.add(
+            ProspectDraftProjection(
+                prospect_id=prospect.id,
+                year=2026,
+                expected_pick=2,
+                draft_range_min=1,
+                draft_range_max=5,
+                tier=1,
+                source="manual_projection",
+                confidence=0.88,
+                notes="Auto attached with shadow.",
+            )
+        )
+        db_session.commit()
+
+        selected = _base_projection_response(client, shadow=True)["selected_player"]
+
+        assert selected["projection_expected_pick"] == 2
+        assert selected["projection_source"] == "manual_projection"
+        assert selected["prediction_range_score"] is not None
+        assert selected["prediction_calibration_notes"]
+
+    def test_team_projection_raises_matching_candidate_shadow_component(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        team = _team_by_abbr(db_session, "SAS")
+        selected_prospect = _prospect_by_name(db_session, "Mikel Brown Jr.")
+        other_prospect = _prospect_by_name(db_session, "Braylon Mullins")
+        db_session.add_all(
+            [
+                ProspectDraftProjection(
+                    prospect_id=selected_prospect.id,
+                    year=2026,
+                    expected_pick=2,
+                    draft_range_min=1,
+                    draft_range_max=5,
+                    tier=1,
+                    source="manual_projection",
+                    confidence=0.8,
+                    notes="Selected projection.",
+                ),
+                ProspectDraftProjection(
+                    prospect_id=other_prospect.id,
+                    year=2026,
+                    expected_pick=2,
+                    draft_range_min=1,
+                    draft_range_max=5,
+                    tier=1,
+                    source="manual_projection",
+                    confidence=0.8,
+                    notes="Alternative projection.",
+                ),
+                TeamPickProjection(
+                    year=2026,
+                    pick_no=2,
+                    team_id=team.id,
+                    prospect_id=other_prospect.id,
+                    projection_type="manual_prediction",
+                    source="manual_projection",
+                    confidence=0.9,
+                    notes="Team likes Braylon at this pick.",
+                ),
+            ]
+        )
+        db_session.commit()
+
+        pick = _base_projection_response(client, shadow=True)
+        selected = pick["selected_player"]
+        braylon = next(
+            candidate
+            for candidate in pick["candidate_board"]
+            if candidate["prospect"]["id"] == other_prospect.id
+        )
+
+        assert selected["team_projection_type"] is None
+        assert selected["prediction_team_projection_score"] == 0.0
+        assert braylon["team_projection_type"] == "manual_prediction"
+        assert braylon["prediction_team_projection_score"] > 0
+
+    def test_shadow_rank_and_delta_do_not_reorder_candidate_board(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        baseline = _base_projection_response(client)
+        team = _team_by_abbr(db_session, "SAS")
+        selected_prospect = _prospect_by_name(db_session, "Mikel Brown Jr.")
+        other_prospect = _prospect_by_name(db_session, "Braylon Mullins")
+        db_session.add_all(
+            [
+                ProspectDraftProjection(
+                    prospect_id=selected_prospect.id,
+                    year=2026,
+                    expected_pick=30,
+                    draft_range_min=28,
+                    draft_range_max=35,
+                    tier=4,
+                    source="manual_projection",
+                    confidence=0.9,
+                    notes="Poor market fit for current pick.",
+                ),
+                ProspectDraftProjection(
+                    prospect_id=other_prospect.id,
+                    year=2026,
+                    expected_pick=2,
+                    draft_range_min=1,
+                    draft_range_max=4,
+                    tier=1,
+                    source="manual_projection",
+                    confidence=0.9,
+                    notes="Strong market fit for current pick.",
+                ),
+                TeamPickProjection(
+                    year=2026,
+                    pick_no=2,
+                    team_id=team.id,
+                    prospect_id=other_prospect.id,
+                    projection_type="manual_prediction",
+                    source="manual_projection",
+                    confidence=0.95,
+                    notes="Strong team-specific shadow signal.",
+                ),
+            ]
+        )
+        db_session.commit()
+
+        with_shadow = _base_projection_response(client, shadow=True)
+
+        assert [
+            candidate["prospect"]["name"] for candidate in with_shadow["candidate_board"]
+        ] == [
+            candidate["prospect"]["name"] for candidate in baseline["candidate_board"]
+        ]
+        braylon = next(
+            candidate
+            for candidate in with_shadow["candidate_board"]
+            if candidate["prospect"]["id"] == other_prospect.id
+        )
+        assert braylon["prediction_shadow_rank"] == 1
+        assert braylon["prediction_shadow_delta"] > 0
+
+    def test_locked_pick_keeps_override_with_prediction_shadow(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        braylon = _prospect_by_name(db_session, "Braylon Mullins")
+        db_session.add(
+            ProspectDraftProjection(
+                prospect_id=braylon.id,
+                year=2026,
+                expected_pick=2,
+                draft_range_min=1,
+                draft_range_max=5,
+                tier=1,
+                source="manual_projection",
+                confidence=0.86,
+                notes="Locked pick shadow diagnostics.",
+            )
+        )
+        db_session.commit()
+
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 1,
+                "limit": 1,
+                "include_prediction_shadow": True,
+                "locked_picks": [{"pick_no": 2, "prospect_id": braylon.id}],
+            },
+        )
+
+        assert response.status_code == 200
+        pick = response.json()["picks"][0]
+        selected = pick["selected_player"]
+        assert selected["prospect"]["name"] == "Braylon Mullins"
+        assert selected["prediction_shadow_score"] is not None
         assert "locked by user override" in "\n".join(pick["decision_log"]).lower()
