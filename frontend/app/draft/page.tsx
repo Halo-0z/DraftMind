@@ -174,6 +174,9 @@ function hasProjectionDiagnostics(player: RankedProspect): boolean {
   ) || hasPredictionShadow(player) || (
     player.prediction_sort_score !== undefined &&
     player.prediction_sort_score !== null
+  ) || (
+    player.market_alignment_label !== undefined &&
+    player.market_alignment_label !== null
   );
 }
 
@@ -204,6 +207,19 @@ function formatProjectionSource(source: string): string {
   return labels[source] ?? source.replaceAll("_", " ");
 }
 
+function marketAlignmentLabel(label: string): string {
+  const labels: Record<string, string> = {
+    高于市场: "比市场更早",
+    明显高于市场: "明显早于市场",
+    低于市场: "比市场更晚",
+    明显低于市场: "明显晚于市场",
+    一致: "基本一致",
+    接近: "接近市场",
+    无市场参考: "暂无市场参考",
+  };
+  return labels[label] ?? label;
+}
+
 function formatShadowDelta(delta: number | null | undefined): string | null {
   if (delta === null || delta === undefined) {
     return null;
@@ -212,6 +228,16 @@ function formatShadowDelta(delta: number | null | undefined): string | null {
     return `+${delta}`;
   }
   return String(delta);
+}
+
+function formatMarketDelta(delta: number | null | undefined): string | null {
+  if (delta === null || delta === undefined) {
+    return null;
+  }
+  if (delta === 0) {
+    return "同顺位";
+  }
+  return delta < 0 ? `早 ${Math.abs(delta)} 位` : `晚 ${delta} 位`;
 }
 
 function candidateSourceLabel(source: string | null | undefined): string | null {
@@ -1667,6 +1693,7 @@ function ProjectionPredictionDiagnostics({
   const confidence = percent(player.projection_confidence);
   const teamConfidence = percent(player.team_projection_confidence);
   const shadowDelta = formatShadowDelta(player.prediction_shadow_delta);
+  const marketDelta = formatMarketDelta(player.market_pick_delta);
   const notes = [
     ...(player.prediction_calibration_notes ?? []),
     ...(player.prediction_selection_notes ?? []),
@@ -1724,6 +1751,19 @@ function ProjectionPredictionDiagnostics({
             档位 {player.projection_tier}
           </span>
         ) : null}
+        {player.market_alignment_label ? (
+          <span className="inline-flex items-center rounded-md border border-court-line/30 bg-court-line/10 px-2 py-1 text-[11px] font-black text-court-line">
+            市场对比{" "}
+            {player.market_expected_pick
+              ? `市场预计 #${player.market_expected_pick}`
+              : "暂无市场参考"}
+            {player.draftmind_selected_pick
+              ? ` · DraftMind #${player.draftmind_selected_pick}`
+              : ""}
+            {marketDelta ? ` · ${marketDelta}` : ""} ·{" "}
+            {marketAlignmentLabel(player.market_alignment_label)}
+          </span>
+        ) : null}
         {confidence ? (
           <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
             预测可信度 {confidence}
@@ -1774,6 +1814,12 @@ function ProjectionPredictionDiagnostics({
       player.prediction_sort_score !== null ? (
         <p className="mt-2 text-[11px] leading-5 text-court-muted">
           预测辅助分只用于“用预测信息辅助选人”模式，不会改写原始评分。
+        </p>
+      ) : null}
+
+      {!compact && player.market_alignment_notes?.length ? (
+        <p className="mt-2 text-[11px] leading-5 text-court-muted">
+          {player.market_alignment_notes[0]}
         </p>
       ) : null}
 

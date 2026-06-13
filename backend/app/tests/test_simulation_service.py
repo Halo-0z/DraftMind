@@ -25,6 +25,8 @@ from app.models.prospect import Prospect
 from app.models.scouting import ProspectScoutingProfile, TeamNeedProfile
 from app.models.team import Team, TeamNeed
 from app.services.simulation_service import (
+    _market_alignment_diagnostics,
+    _market_alignment_label,
     adjust_team_need_after_pick,
 )
 from app.services.team_need_adjustment import (
@@ -1980,6 +1982,8 @@ class TestProjectionDiagnostics:
         assert selected["prospect"]["name"] == "Mikel Brown Jr."
         assert selected["projection_expected_pick"] is None
         assert selected["team_projection_type"] is None
+        assert selected["market_alignment_label"] is None
+        assert selected["market_alignment_notes"] is None
 
     def test_projection_diagnostics_do_not_change_selection_or_scores(
         self,
@@ -2025,6 +2029,125 @@ class TestProjectionDiagnostics:
         assert selected["projection_tier"] == 3
         assert selected["projection_confidence"] == 0.88
         assert selected["projection_source"] == "manual_projection"
+
+    def test_market_alignment_fields_use_current_pick_and_expected_pick(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        selected_prospect = _prospect_by_name(db_session, "Mikel Brown Jr.")
+        alternative_prospect = _prospect_by_name(db_session, "Braylon Mullins")
+        db_session.add(
+            ProspectDraftProjection(
+                prospect_id=selected_prospect.id,
+                year=2026,
+                expected_pick=2,
+                draft_range_min=1,
+                draft_range_max=5,
+                tier=1,
+                source="manual_projection",
+                confidence=0.88,
+                notes="Market alignment signal.",
+            )
+        )
+        db_session.add(
+            ProspectDraftProjection(
+                prospect_id=alternative_prospect.id,
+                year=2026,
+                expected_pick=8,
+                draft_range_min=6,
+                draft_range_max=12,
+                tier=2,
+                source="manual_projection",
+                confidence=0.77,
+                notes="Alternative market alignment signal.",
+            )
+        )
+        db_session.commit()
+
+        pick = _base_projection_response(client, include=True)
+        selected = pick["selected_player"]
+
+        assert selected["prospect"]["name"] == "Mikel Brown Jr."
+        assert selected["market_expected_pick"] == 2
+        assert selected["draftmind_selected_pick"] == 2
+        assert selected["market_pick_delta"] == 0
+        assert selected["market_alignment_label"] == "一致"
+        assert "基本一致" in selected["market_alignment_notes"][0]
+        assert all(
+            alternative["market_alignment_label"] is None
+            for alternative in pick["alternatives"]
+        )
+        assert all(
+            alternative["draftmind_selected_pick"] is None
+            for alternative in pick["alternatives"]
+        )
+        for candidate in pick["candidate_board"]:
+            if candidate["prospect"]["id"] != selected["prospect"]["id"]:
+                assert candidate["projection_expected_pick"] == 8
+                assert candidate["market_alignment_label"] is None
+                assert candidate["draftmind_selected_pick"] is None
+
+    def test_market_alignment_notes_when_draftmind_is_earlier_than_market(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        selected_prospect = _prospect_by_name(db_session, "Mikel Brown Jr.")
+        db_session.add(
+            ProspectDraftProjection(
+                prospect_id=selected_prospect.id,
+                year=2026,
+                expected_pick=8,
+                draft_range_min=6,
+                draft_range_max=12,
+                tier=2,
+                source="manual_projection",
+                confidence=0.88,
+                notes="Market alignment signal.",
+            )
+        )
+        db_session.commit()
+
+        selected = _base_projection_response(client, include=True)["selected_player"]
+
+        assert selected["draftmind_selected_pick"] == 2
+        assert selected["market_pick_delta"] == -6
+        assert selected["market_alignment_label"] == "高于市场"
+        assert "比市场更看好" in selected["market_alignment_notes"][0]
+
+    def test_market_alignment_missing_projection_returns_no_market_reference(
+        self,
+        client: TestClient,
+    ) -> None:
+        selected = _base_projection_response(client, include=True)["selected_player"]
+
+        assert selected["projection_expected_pick"] is None
+        assert selected["market_expected_pick"] is None
+        assert selected["draftmind_selected_pick"] == 2
+        assert selected["market_pick_delta"] is None
+        assert selected["market_alignment_label"] == "无市场参考"
+        assert "暂无市场顺位参考" in selected["market_alignment_notes"][0]
+
+    def test_market_alignment_label_boundaries(self) -> None:
+        assert _market_alignment_label(None) == "无市场参考"
+        assert _market_alignment_label(0) == "一致"
+        assert _market_alignment_label(2) == "接近"
+        assert _market_alignment_label(-2) == "接近"
+        assert _market_alignment_label(-3) == "高于市场"
+        assert _market_alignment_label(-7) == "明显高于市场"
+        assert _market_alignment_label(3) == "低于市场"
+        assert _market_alignment_label(7) == "明显低于市场"
+
+    def test_market_alignment_helper_explains_later_than_market(self) -> None:
+        diagnostics = _market_alignment_diagnostics(
+            prospect_projection=SimpleNamespace(expected_pick=4),
+            selected_pick_no=10,
+        )
+
+        assert diagnostics["market_pick_delta"] == 6
+        assert diagnostics["market_alignment_label"] == "低于市场"
+        assert "比市场更保守" in diagnostics["market_alignment_notes"][0]
 
     def test_manual_projection_takes_priority_over_seed_projection(
         self,

@@ -133,6 +133,11 @@ export type RankedProspect = {
   prediction_selection_delta?: number | null;
   prediction_selection_applied?: boolean;
   prediction_selection_notes?: string[] | null;
+  market_expected_pick?: number | null;
+  draftmind_selected_pick?: number | null;
+  market_pick_delta?: number | null;
+  market_alignment_label?: string | null;
+  market_alignment_notes?: string[] | null;
   candidate_source?: string | null;
 };
 

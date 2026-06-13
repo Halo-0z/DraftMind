@@ -81,6 +81,8 @@ def _to_ranked_read(
     ranking: ProspectRanking,
     projection: ProjectionDiagnostics | None = None,
     candidate_source: str | None = None,
+    selected_pick_no: int | None = None,
+    include_market_alignment: bool = False,
 ) -> RankedProspectRead:
     prospect_projection = projection.prospect_projection if projection else None
     team_projection = projection.team_projection if projection else None
@@ -88,6 +90,20 @@ def _to_ranked_read(
         projection.prediction_calibration if projection else None
     )
     prediction_selection = projection.prediction_selection if projection else None
+    market_alignment = (
+        _market_alignment_diagnostics(
+            prospect_projection=prospect_projection,
+            selected_pick_no=selected_pick_no,
+        )
+        if include_market_alignment
+        else {
+            "market_expected_pick": None,
+            "draftmind_selected_pick": None,
+            "market_pick_delta": None,
+            "market_alignment_label": None,
+            "market_alignment_notes": None,
+        }
+    )
     return RankedProspectRead(
         prospect=ranking.prospect,
         scores=ScoreBreakdown(
@@ -168,8 +184,89 @@ def _to_ranked_read(
         prediction_selection_notes=(
             prediction_selection.notes if prediction_selection else None
         ),
+        market_expected_pick=market_alignment["market_expected_pick"],
+        draftmind_selected_pick=market_alignment["draftmind_selected_pick"],
+        market_pick_delta=market_alignment["market_pick_delta"],
+        market_alignment_label=market_alignment["market_alignment_label"],
+        market_alignment_notes=market_alignment["market_alignment_notes"],
         candidate_source=candidate_source,
     )
+
+
+def _market_alignment_label(delta: int | None) -> str:
+    if delta is None:
+        return "无市场参考"
+    if delta == 0:
+        return "一致"
+    if abs(delta) <= 2:
+        return "接近"
+    if -6 <= delta <= -3:
+        return "高于市场"
+    if delta <= -7:
+        return "明显高于市场"
+    if 3 <= delta <= 6:
+        return "低于市场"
+    return "明显低于市场"
+
+
+def _market_alignment_diagnostics(
+    *,
+    prospect_projection: ProspectDraftProjection | None,
+    selected_pick_no: int | None,
+) -> dict[str, int | str | list[str] | None]:
+    expected_pick = (
+        prospect_projection.expected_pick if prospect_projection else None
+    )
+    if expected_pick is None:
+        return {
+            "market_expected_pick": None,
+            "draftmind_selected_pick": selected_pick_no,
+            "market_pick_delta": None,
+            "market_alignment_label": "无市场参考",
+            "market_alignment_notes": [
+                "暂无市场顺位参考，结果主要来自 DraftMind 原始评分。"
+            ],
+        }
+    if selected_pick_no is None:
+        return {
+            "market_expected_pick": expected_pick,
+            "draftmind_selected_pick": None,
+            "market_pick_delta": None,
+            "market_alignment_label": None,
+            "market_alignment_notes": None,
+        }
+
+    delta = selected_pick_no - expected_pick
+    label = _market_alignment_label(delta)
+    if delta == 0:
+        note = (
+            f"市场预计约第 {expected_pick} 顺位，DraftMind 在第 "
+            f"{selected_pick_no} 顺位选择，基本一致。"
+        )
+    elif abs(delta) <= 2:
+        direction = "更早" if delta < 0 else "更晚"
+        note = (
+            f"市场预计约第 {expected_pick} 顺位，DraftMind 在第 "
+            f"{selected_pick_no} 顺位选择，略比市场{direction}。"
+        )
+    elif delta < 0:
+        note = (
+            f"市场预计约第 {expected_pick} 顺位，DraftMind 在第 "
+            f"{selected_pick_no} 顺位选择，说明模型比市场更看好他。"
+        )
+    else:
+        note = (
+            f"市场预计约第 {expected_pick} 顺位，DraftMind 在第 "
+            f"{selected_pick_no} 顺位选择，说明模型对他比市场更保守。"
+        )
+
+    return {
+        "market_expected_pick": expected_pick,
+        "draftmind_selected_pick": selected_pick_no,
+        "market_pick_delta": delta,
+        "market_alignment_label": label,
+        "market_alignment_notes": [note],
+    }
 
 
 def _load_team_need_profile(
@@ -312,6 +409,8 @@ def _ranked_reads_with_projection(
     *,
     prospect_projection_map: dict[int, ProspectDraftProjection] | None,
     team_projection_map: dict[int, TeamPickProjection] | None,
+    selected_pick_no: int | None = None,
+    include_market_alignment: bool = False,
     prediction_shadow_map: dict[int, tuple[PredictionCalibrationResult, int, int]] | None = None,
     prediction_selection_map: dict[int, PredictionSelectionResult] | None = None,
     candidate_source_map: dict[int, str] | None = None,
@@ -331,6 +430,8 @@ def _ranked_reads_with_projection(
                 if candidate_source_map and ranking.prospect.id is not None
                 else None
             ),
+            selected_pick_no=selected_pick_no,
+            include_market_alignment=include_market_alignment,
         )
         for ranking in rankings
     ]
@@ -886,6 +987,8 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                             prediction_shadow_map=prediction_shadow_map,
                             prediction_selection_map=prediction_selection_map,
                         ),
+                        selected_pick_no=draft_pick.pick_no,
+                        include_market_alignment=include_projection_context,
                     ),
                     alternatives=_ranked_reads_with_projection(
                         alternatives,
@@ -992,6 +1095,8 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
                             prediction_shadow_map=prediction_shadow_map,
                             prediction_selection_map=prediction_selection_map,
                         ),
+                        selected_pick_no=draft_pick.pick_no,
+                        include_market_alignment=include_projection_context,
                     ),
                     alternatives=_ranked_reads_with_projection(
                         alternatives,
