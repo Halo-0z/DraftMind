@@ -563,12 +563,11 @@ def _upsert_draft_order(
     team_id: int,
 ) -> DraftOrder:
     order = db.query(DraftOrder).filter_by(year=year, pick_no=pick_no).first()
-    values = {"year": year, "pick_no": pick_no, "team_id": team_id}
-    if order is None:
-        order = DraftOrder(**values)
-        db.add(order)
-    else:
-        _assign_attrs(order, values)
+    if order is not None:
+        return order
+
+    order = DraftOrder(year=year, pick_no=pick_no, team_id=team_id)
+    db.add(order)
     return order
 
 

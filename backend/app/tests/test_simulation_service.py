@@ -34,6 +34,13 @@ from app.services.team_need_adjustment import (
 from scripts import seed_db
 
 
+def _clear_2026_draft_order(db_session: Session) -> None:
+    db_session.query(DraftOrder).filter(DraftOrder.year == 2026).delete(
+        synchronize_session=False
+    )
+    db_session.flush()
+
+
 # ---------------------------------------------------------------------------
 # Lightweight prospect stub for unit tests (avoids SQLAlchemy session issues)
 # ---------------------------------------------------------------------------
@@ -2444,6 +2451,7 @@ class TestPredictionCalibrationShadow:
         client: TestClient,
         db_session: Session,
     ) -> None:
+        _clear_2026_draft_order(db_session)
         seed_db.seed_demo_data(db_session)
         db_session.commit()
 
@@ -2498,6 +2506,7 @@ class TestPredictionCalibrationShadow:
         client: TestClient,
         db_session: Session,
     ) -> None:
+        _clear_2026_draft_order(db_session)
         seed_db.seed_demo_data(db_session)
         db_session.commit()
 
