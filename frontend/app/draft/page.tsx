@@ -171,7 +171,10 @@ function hasProjectionDiagnostics(player: RankedProspect): boolean {
   ) || (
     player.team_projection_type !== undefined &&
     player.team_projection_type !== null
-  ) || hasPredictionShadow(player);
+  ) || hasPredictionShadow(player) || (
+    player.prediction_sort_score !== undefined &&
+    player.prediction_sort_score !== null
+  );
 }
 
 function hasPredictionShadow(player: RankedProspect): boolean {
@@ -229,6 +232,7 @@ export default function DraftPage() {
   const [showScoutingDiagnostics, setShowScoutingDiagnostics] = useState(false);
   const [useScoutingTiebreaker, setUseScoutingTiebreaker] = useState(false);
   const [showPredictionShadow, setShowPredictionShadow] = useState(false);
+  const [usePredictionCalibration, setUsePredictionCalibration] = useState(false);
   const [news, setNews] = useState<NewsArticle[]>([]);
   const [teamProfile, setTeamProfile] = useState<TeamNeedProfile | null>(null);
   const [teamProfileForm, setTeamProfileForm] = useState<TeamProfileForm>(
@@ -607,8 +611,11 @@ export default function DraftPage() {
         include_scouting_diagnostics:
           showScoutingDiagnostics || useScoutingTiebreaker,
         use_scouting_tiebreaker: useScoutingTiebreaker,
-        include_projection_diagnostics: showPredictionShadow,
-        include_prediction_shadow: showPredictionShadow,
+        include_projection_diagnostics:
+          showPredictionShadow || usePredictionCalibration,
+        include_prediction_shadow:
+          showPredictionShadow || usePredictionCalibration,
+        use_prediction_calibration: usePredictionCalibration,
         // Send an empty array (not undefined) so the backend treats the
         // request as the same shape either way.  `undefined` also works
         // because the field is Optional, but explicit is clearer.
@@ -966,6 +973,28 @@ export default function DraftPage() {
                   </span>
                   <span className="mt-1 block text-xs leading-5 text-court-muted">
                     展示 market projection、team signal 和 shadow rank；影子分只用于观察预测校准方向，不改变当前 selected_player。
+                  </span>
+                </span>
+              </label>
+              <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-md border border-fuchsia-300/25 bg-fuchsia-300/[0.04] p-3 transition hover:border-fuchsia-300/55">
+                <input
+                  checked={usePredictionCalibration}
+                  className="mt-1 h-4 w-4 accent-fuchsia-300"
+                  onChange={(event) => {
+                    const next = event.target.checked;
+                    setUsePredictionCalibration(next);
+                    if (next) {
+                      setShowPredictionShadow(true);
+                    }
+                  }}
+                  type="checkbox"
+                />
+                <span>
+                  <span className="block text-sm font-black text-court-text">
+                    Use prediction-calibrated selection
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-court-muted">
+                    默认关闭。打开后会用 projection、expected range 和 team signal 影响 selected_player；这不是 consensus lock。
                   </span>
                 </span>
               </label>
@@ -1629,7 +1658,10 @@ function ProjectionPredictionDiagnostics({
   const confidence = percent(player.projection_confidence);
   const teamConfidence = percent(player.team_projection_confidence);
   const shadowDelta = formatShadowDelta(player.prediction_shadow_delta);
-  const notes = (player.prediction_calibration_notes ?? []).slice(
+  const notes = [
+    ...(player.prediction_calibration_notes ?? []),
+    ...(player.prediction_selection_notes ?? []),
+  ].slice(
     0,
     compact ? 1 : 3,
   );
@@ -1652,9 +1684,15 @@ function ProjectionPredictionDiagnostics({
               Projection 是预测信号，不是最终答案；影子分不会改变当前 selected_player。
             </p>
           </div>
-          {hasPredictionShadow(player) ? (
-            <span className="rounded-md border border-sky-300/30 bg-sky-300/10 px-2 py-1 text-xs font-black text-sky-100">
-              Shadow {player.prediction_shadow_score?.toFixed(1)}
+        {hasPredictionShadow(player) ? (
+          <span className="rounded-md border border-sky-300/30 bg-sky-300/10 px-2 py-1 text-xs font-black text-sky-100">
+            Shadow {player.prediction_shadow_score?.toFixed(1)}
+          </span>
+        ) : null}
+          {player.prediction_sort_score !== undefined &&
+          player.prediction_sort_score !== null ? (
+            <span className="rounded-md border border-fuchsia-300/30 bg-fuchsia-300/10 px-2 py-1 text-xs font-black text-fuchsia-100">
+              Prediction sort {player.prediction_sort_score.toFixed(1)}
             </span>
           ) : null}
         </div>
@@ -1709,7 +1747,25 @@ function ProjectionPredictionDiagnostics({
             Delta {shadowDelta}
           </span>
         ) : null}
+        {player.prediction_selection_rank ? (
+          <span className="inline-flex items-center rounded-md border border-fuchsia-300/30 bg-fuchsia-300/10 px-2 py-1 text-[11px] font-black text-fuchsia-100">
+            Prediction rank #{player.prediction_selection_rank}
+          </span>
+        ) : null}
+        {player.prediction_selection_applied ? (
+          <span className="inline-flex items-center rounded-md border border-fuchsia-300/40 bg-fuchsia-300/15 px-2 py-1 text-[11px] font-black text-fuchsia-100">
+            预测校准选中
+          </span>
+        ) : null}
       </div>
+
+      {!compact &&
+      player.prediction_sort_score !== undefined &&
+      player.prediction_sort_score !== null ? (
+        <p className="mt-2 text-[11px] leading-5 text-court-muted">
+          Prediction sort 是显式预测校准模式的排序键，不会改写 final_score。
+        </p>
+      ) : null}
 
       {!compact && hasPredictionShadow(player) ? (
         <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-court-muted sm:grid-cols-4">

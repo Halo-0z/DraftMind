@@ -128,6 +128,11 @@ export type RankedProspect = {
   prediction_shadow_rank?: number | null;
   prediction_shadow_delta?: number | null;
   prediction_calibration_notes?: string[] | null;
+  prediction_sort_score?: number | null;
+  prediction_selection_rank?: number | null;
+  prediction_selection_delta?: number | null;
+  prediction_selection_applied?: boolean;
+  prediction_selection_notes?: string[] | null;
   candidate_source?: string | null;
 };
 
@@ -181,6 +186,7 @@ export type SimulatePayload = {
   use_scouting_tiebreaker?: boolean;
   include_projection_diagnostics?: boolean;
   include_prediction_shadow?: boolean;
+  use_prediction_calibration?: boolean;
   // Phase 3: user-override / locked picks.  Each entry pins a specific
   // pick_no to a specific prospect.  The backend (Phase 2) also accepts
   // a free-text `prospect_name` fallback, but the MVP frontend only

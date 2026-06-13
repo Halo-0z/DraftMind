@@ -1928,6 +1928,7 @@ def _base_projection_response(
     *,
     include: bool = False,
     shadow: bool = False,
+    calibration: bool = False,
 ) -> dict:
     response = client.post(
         "/api/simulate",
@@ -1937,6 +1938,7 @@ def _base_projection_response(
             "limit": 1,
             "include_projection_diagnostics": include,
             "include_prediction_shadow": shadow,
+            "use_prediction_calibration": calibration,
         },
     )
     assert response.status_code == 200
@@ -2537,3 +2539,208 @@ class TestPredictionCalibrationShadow:
         assert shadow_pick["selected_player"]["scores"]["fit_score"] == (
             baseline_pick["selected_player"]["scores"]["fit_score"]
         )
+
+
+class TestPredictionCalibratedSelection:
+    def _add_braylon_manual_signal(self, db_session: Session) -> Prospect:
+        team = _team_by_abbr(db_session, "SAS")
+        braylon = _prospect_by_name(db_session, "Braylon Mullins")
+        db_session.add_all(
+            [
+                ProspectDraftProjection(
+                    prospect_id=braylon.id,
+                    year=2026,
+                    expected_pick=2,
+                    draft_range_min=1,
+                    draft_range_max=5,
+                    tier=1,
+                    source="manual_projection",
+                    confidence=0.95,
+                    notes="Manual projection says Braylon belongs in the top tier.",
+                ),
+                TeamPickProjection(
+                    year=2026,
+                    pick_no=2,
+                    team_id=team.id,
+                    prospect_id=braylon.id,
+                    projection_type="manual_prediction",
+                    source="manual_projection",
+                    confidence=0.95,
+                    notes="Manual team-pick projection for Braylon.",
+                ),
+            ]
+        )
+        db_session.commit()
+        return braylon
+
+    def test_prediction_calibration_default_off_keeps_selected_and_scores(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        baseline = _base_projection_response(client)
+        self._add_braylon_manual_signal(db_session)
+
+        pick = _base_projection_response(client)
+        selected = pick["selected_player"]
+
+        assert selected["prospect"]["id"] == baseline["selected_player"]["prospect"]["id"]
+        assert selected["scores"]["final_score"] == baseline["selected_player"]["scores"]["final_score"]
+        assert selected["scores"]["fit_score"] == baseline["selected_player"]["scores"]["fit_score"]
+        assert selected["prediction_sort_score"] is None
+        assert selected["prediction_selection_applied"] is False
+
+    def test_prediction_calibration_opt_in_can_change_selected_player(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        baseline = _base_projection_response(client)
+        braylon = self._add_braylon_manual_signal(db_session)
+
+        pick = _base_projection_response(client, calibration=True)
+        selected = pick["selected_player"]
+
+        assert baseline["selected_player"]["prospect"]["name"] == "Mikel Brown Jr."
+        assert selected["prospect"]["id"] == braylon.id
+        assert selected["prospect"]["name"] == "Braylon Mullins"
+        assert selected["scores"]["final_score"] != selected["prediction_sort_score"]
+        assert selected["prediction_selection_rank"] == 1
+        assert selected["prediction_selection_applied"] is True
+        assert any(
+            "Prediction calibration enabled" in line
+            for line in pick["decision_log"]
+        )
+        assert any(
+            "Selected by prediction_sort_score" in line
+            for line in pick["decision_log"]
+        )
+
+    def test_prediction_calibration_computes_without_shadow_flag(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        self._add_braylon_manual_signal(db_session)
+
+        pick = _base_projection_response(
+            client,
+            shadow=False,
+            calibration=True,
+        )
+        selected = pick["selected_player"]
+
+        assert selected["prospect"]["name"] == "Braylon Mullins"
+        assert selected["prediction_sort_score"] is not None
+        assert selected["prediction_shadow_score"] is None
+
+    def test_prediction_calibration_with_shadow_exposes_both_diagnostics(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        self._add_braylon_manual_signal(db_session)
+
+        pick = _base_projection_response(
+            client,
+            shadow=True,
+            calibration=True,
+        )
+        selected = pick["selected_player"]
+
+        assert selected["prospect"]["name"] == "Braylon Mullins"
+        assert selected["prediction_sort_score"] is not None
+        assert selected["prediction_shadow_score"] is not None
+        assert selected["projection_expected_pick"] == 2
+        assert selected["team_projection_type"] == "manual_prediction"
+
+    def test_locked_pick_override_beats_prediction_calibration(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        self._add_braylon_manual_signal(db_session)
+        mikel = _prospect_by_name(db_session, "Mikel Brown Jr.")
+
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 1,
+                "limit": 1,
+                "use_prediction_calibration": True,
+                "locked_picks": [{"pick_no": 2, "prospect_id": mikel.id}],
+            },
+        )
+
+        assert response.status_code == 200
+        pick = response.json()["picks"][0]
+        assert pick["selected_player"]["prospect"]["name"] == "Mikel Brown Jr."
+        assert "locked by user override" in "\n".join(pick["decision_log"]).lower()
+
+    def test_consensus_mock_does_not_hard_lock_huge_final_score_gap(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        team = _team_by_abbr(db_session, "SAS")
+        low_score_prospect = Prospect(
+            year=2026,
+            name="Consensus Reach Candidate",
+            position="C",
+            age=20.0,
+            height="6-10",
+            weight=230,
+            school_or_league="Demo",
+            ppg=5.0,
+            rpg=3.0,
+            apg=0.8,
+            fg_pct=39.0,
+            three_pct=20.0,
+            ft_pct=58.0,
+            stocks=0.3,
+            archetype="Long-term project",
+            upside_score=45,
+            risk_score=80,
+        )
+        db_session.add(low_score_prospect)
+        db_session.flush()
+        db_session.add_all(
+            [
+                ProspectDraftProjection(
+                    prospect_id=low_score_prospect.id,
+                    year=2026,
+                    expected_pick=2,
+                    draft_range_min=1,
+                    draft_range_max=4,
+                    tier=1,
+                    source="consensus_reference",
+                    confidence=0.95,
+                    notes="Consensus reference only.",
+                ),
+                TeamPickProjection(
+                    year=2026,
+                    pick_no=2,
+                    team_id=team.id,
+                    prospect_id=low_score_prospect.id,
+                    projection_type="consensus_mock",
+                    source="consensus_reference",
+                    confidence=0.95,
+                    notes="Consensus mock should not hard-lock the pick.",
+                ),
+            ]
+        )
+        db_session.commit()
+
+        pick = _base_projection_response(client, shadow=True, calibration=True)
+        selected = pick["selected_player"]
+        reach_candidate = next(
+            candidate
+            for candidate in pick["candidate_board"]
+            if candidate["prospect"]["name"] == "Consensus Reach Candidate"
+        )
+
+        assert selected["prospect"]["name"] == "Mikel Brown Jr."
+        assert reach_candidate["prediction_sort_score"] is not None
+        assert reach_candidate["prediction_selection_rank"] > 1
+        assert reach_candidate["prediction_selection_applied"] is False

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from app.services.prediction_calibration import (
     calculate_prediction_calibration,
+    calculate_prediction_sort_score,
     team_projection_type_score,
 )
 
@@ -124,3 +125,79 @@ def test_low_confidence_projection_weakens_shadow_influence() -> None:
 
     assert high_confidence.confidence_weight > low_confidence.confidence_weight
     assert high_confidence.shadow_score > low_confidence.shadow_score
+
+
+def test_prediction_sort_score_rewards_strong_manual_team_signal() -> None:
+    sort_score, eligible, notes = calculate_prediction_sort_score(
+        pick_no=2,
+        ranking=_ranking(final_score=61.0),
+        prospect_projection=SimpleNamespace(
+            expected_pick=2,
+            draft_range_min=1,
+            draft_range_max=5,
+            tier=1,
+            source="manual_projection",
+            confidence=0.95,
+        ),
+        team_projection=SimpleNamespace(
+            projection_type="manual_prediction",
+            source="manual_projection",
+            confidence=0.95,
+        ),
+        original_top_final_score=74.8,
+    )
+
+    assert eligible is True
+    assert sort_score > 74.8
+    assert any("Top-tier early-pick protection" in note for note in notes)
+
+
+def test_prediction_sort_score_blocks_large_gap_consensus_lock() -> None:
+    sort_score, eligible, notes = calculate_prediction_sort_score(
+        pick_no=2,
+        ranking=_ranking(final_score=45.0),
+        prospect_projection=SimpleNamespace(
+            expected_pick=2,
+            draft_range_min=1,
+            draft_range_max=5,
+            tier=1,
+            source="consensus_reference",
+            confidence=0.95,
+        ),
+        team_projection=SimpleNamespace(
+            projection_type="consensus_mock",
+            source="consensus_reference",
+            confidence=0.95,
+        ),
+        original_top_final_score=74.8,
+    )
+
+    assert eligible is False
+    assert sort_score < 74.8
+    assert any("guardrail blocked" in note for note in notes)
+
+
+def test_news_display_only_projection_source_does_not_boost_selection() -> None:
+    sort_score, eligible, notes = calculate_prediction_sort_score(
+        pick_no=2,
+        ranking=_ranking(final_score=70.0),
+        prospect_projection=SimpleNamespace(
+            expected_pick=2,
+            draft_range_min=1,
+            draft_range_max=5,
+            tier=1,
+            source="news_display_only",
+            confidence=0.99,
+        ),
+        team_projection=SimpleNamespace(
+            projection_type="manual_prediction",
+            source="news_display_only",
+            confidence=0.99,
+        ),
+        original_top_final_score=74.8,
+    )
+
+    assert eligible is True
+    assert sort_score <= 70.0
+    assert sort_score < 74.8
+    assert any("within projected draft range" in note for note in notes)
