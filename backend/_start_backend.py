@@ -2,7 +2,7 @@
 os.environ["PYTHONPATH"] = r"D:\DraftMind\backend"
 os.environ["PYTHONUNBUFFERED"] = "1"
 sys.path.insert(0, r"D:\DraftMind\backend")
-log_path = r"D:\DraftMind\backend_LOG"
+log_path = r"D:\DraftMind\backend\_backend.log"
 try:
     sys.stdout = open(log_path, "w", encoding="utf-8", buffering=1)
     sys.stderr = sys.stdout
