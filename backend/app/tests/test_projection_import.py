@@ -8,6 +8,11 @@ from scripts.import_projection_board import (
     import_prospect_projection_csv,
     import_team_pick_projection_csv,
 )
+from scripts.import_2026_consensus_projection import (
+    DEMO_PROSPECT_NOTE,
+    DEMO_TEAM_PICK_NOTE,
+    remove_stale_demo_projection_rows,
+)
 from scripts.seed_db import (
     PROSPECT_PROJECTION_NOTE,
     TEAM_PICK_PROJECTION_NOTE,
@@ -249,3 +254,69 @@ def test_csv_import_does_not_affect_simulation_selected_player(
     assert summary.created == 1
     assert after.status_code == 200
     assert after.json()["picks"][0]["selected_player"]["prospect"]["name"] == before_name
+
+
+def test_consensus_import_removes_only_stale_demo_projection_rows(
+    db_session: Session,
+) -> None:
+    prospect = _prospect(db_session)
+    other_prospect = _prospect(db_session, "Braylon Mullins")
+    team = _team(db_session)
+    demo_projection = ProspectDraftProjection(
+        prospect_id=prospect.id,
+        year=2026,
+        expected_pick=10,
+        source="seed_projection",
+        confidence=0.4,
+        notes=DEMO_PROSPECT_NOTE,
+    )
+    custom_seed_projection = ProspectDraftProjection(
+        prospect_id=other_prospect.id,
+        year=2026,
+        expected_pick=11,
+        source="seed_projection",
+        confidence=0.6,
+        notes="Custom seed projection should stay.",
+    )
+    manual_projection = ProspectDraftProjection(
+        prospect_id=prospect.id,
+        year=2026,
+        expected_pick=12,
+        source="manual_projection",
+        confidence=0.9,
+        notes="Manual projection should stay.",
+    )
+    demo_team_projection = TeamPickProjection(
+        year=2026,
+        pick_no=2,
+        team_id=team.id,
+        prospect_id=prospect.id,
+        projection_type="consensus_mock",
+        source="seed_projection",
+        confidence=0.4,
+        notes=DEMO_TEAM_PICK_NOTE,
+    )
+    db_session.add_all(
+        [
+            demo_projection,
+            custom_seed_projection,
+            manual_projection,
+            demo_team_projection,
+        ]
+    )
+    db_session.commit()
+
+    removed_prospects, removed_team_picks = remove_stale_demo_projection_rows(
+        db_session
+    )
+    db_session.commit()
+
+    assert removed_prospects == 1
+    assert removed_team_picks == 1
+    remaining_notes = {
+        row.notes for row in db_session.query(ProspectDraftProjection).all()
+    }
+    assert DEMO_PROSPECT_NOTE not in remaining_notes
+    assert "Custom seed projection should stay." in remaining_notes
+    assert "Manual projection should stay." in remaining_notes
+    assert db_session.query(TeamPickProjection).count() == 0

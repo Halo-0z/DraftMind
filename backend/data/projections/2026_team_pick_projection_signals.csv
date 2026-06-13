@@ -1,0 +1,5 @@
+year,pick_no,team_abbr,prospect_name,projection_type,source,confidence,notes
+2026,1,WAS,AJ Dybantsa,consensus_mock,consensus_reference,0.68,"Weak-to-medium market team signal compiled 2026-06-14: CBS Sports and Tankathon both mock this pick/team/player pairing; not a hard lock."
+2026,5,LAC,Keaton Wagler,consensus_mock,consensus_reference,0.62,"Weak-to-medium market team signal compiled 2026-06-14: CBS Sports and Tankathon both mock this pick/team/player pairing; not a hard lock."
+2026,6,BKN,Darius Acuff Jr.,consensus_mock,consensus_reference,0.62,"Weak-to-medium market team signal compiled 2026-06-14: CBS Sports and Tankathon both mock this pick/team/player pairing; not a hard lock."
+2026,12,OKC,Yaxel Lendeborg,consensus_mock,consensus_reference,0.62,"Weak-to-medium market team signal compiled 2026-06-14: CBS Sports and Tankathon both mock this pick/team/player pairing; not a hard lock."
