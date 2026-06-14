@@ -25,6 +25,21 @@ class Prospect(Base):
     archetype: Mapped[str] = mapped_column(String(120))
     upside_score: Mapped[float] = mapped_column(Float)
     risk_score: Mapped[float] = mapped_column(Float)
+    # B0-K1: provenance / confidence for the ppg/rpg/apg/fg/3pt/ft/stocks
+    # fields above.  Both nullable for backward compatibility (pre-B0-K1 rows
+    # have no provenance and are treated as ``unknown``).
+    #
+    # ``stats_source`` values:
+    #   seed_manual              - hand-curated Prospect rows in seed_db.PROSPECTS
+    #   nba_importer_heuristic   - estimate_stats() template values from the
+    #                              NBA.com importer (position baseline, not real)
+    #   unknown                  - legacy / no provenance recorded
+    #
+    # These fields are purely informational.  They MUST NOT change final_score
+    # or selected_player in this milestone -- they only let downstream audits
+    # and (later) calibration tell real stats from heuristic ones.
+    stats_source: Mapped[str | None] = mapped_column(String(40), nullable=True, default=None)
+    stats_confidence: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
 
     scouting_reports: Mapped[list["ScoutingReport"]] = relationship(
         back_populates="prospect",

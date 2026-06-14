@@ -72,6 +72,12 @@ def _prospect_brief(p: Prospect) -> dict[str, Any]:
         "upside_score": p.upside_score,
         "risk_score": p.risk_score,
         "archetype": p.archetype,
+        # B0-K1: surface stats provenance so an operator can tell, at a
+        # glance, whether a high-upside-no-projection pick or a duplicate
+        # stats group is driven by hand-curated seed data or by the NBA.com
+        # importer's heuristic baseline.  Legacy rows read as "unknown".
+        "stats_source": p.stats_source or "unknown",
+        "stats_confidence": p.stats_confidence,
     }
 
 
@@ -189,6 +195,10 @@ def _prospect_brief_obj(prospect) -> dict[str, Any]:
         "upside_score": prospect.upside_score,
         "risk_score": prospect.risk_score,
         "archetype": prospect.archetype,
+        # B0-K1: mirror _prospect_brief so the selected-top-N section also
+        # reports stats provenance.
+        "stats_source": getattr(prospect, "stats_source", None) or "unknown",
+        "stats_confidence": getattr(prospect, "stats_confidence", None),
     }
 
 
@@ -209,7 +219,8 @@ def _print_human(report: AuditReport, *, min_upside: float, top_n: int) -> None:
         print("  (none)")
     for e in report.high_upside_no_projection:
         print(f"  id={e['id']:>3} upside={e['upside_score']:5.1f} "
-              f"{e['name']:<26} {e['position']} {e['school_or_league']}")
+              f"{e['name']:<26} {e['position']} {e['school_or_league']} "
+              f"[stats={e['stats_source']}]")
 
     print("\n--- duplicate / near-duplicate prospect names ---")
     if not report.duplicate_name_groups:
@@ -219,7 +230,8 @@ def _print_human(report: AuditReport, *, min_upside: float, top_n: int) -> None:
         for m in g["members"]:
             proj = "proj" if m["has_projection"] else "NO-proj"
             print(f"    id={m['id']:>3} {m['name']:<28} {m['position']} "
-                  f"upside={m['upside_score']} [{proj}]")
+                  f"upside={m['upside_score']} [{proj}] "
+                  f"[stats={m['stats_source']}]")
 
     print("\n--- duplicate stats fingerprints (template-copy candidates) ---")
     if not report.duplicate_stats_groups:
@@ -231,7 +243,7 @@ def _print_human(report: AuditReport, *, min_upside: float, top_n: int) -> None:
               f"stocks={s['stocks']}")
         for m in g["members"]:
             print(f"    id={m['id']:>3} {m['name']:<26} {m['position']} "
-                  f"{m['school_or_league']}")
+                  f"{m['school_or_league']} [stats={m['stats_source']}]")
 
     if top_n > 0:
         print(f"\n--- prospects selected in first {top_n} picks with NO projection ---")
@@ -243,7 +255,7 @@ def _print_human(report: AuditReport, *, min_upside: float, top_n: int) -> None:
             else:
                 print(f"  #{e['selected_pick']:>2} {e['team_abbr']:<4} "
                       f"id={e['id']:>3} {e['name']:<26} "
-                      f"final={e['final_score']}")
+                      f"final={e['final_score']} [stats={e['stats_source']}]")
 
 
 def main() -> None:

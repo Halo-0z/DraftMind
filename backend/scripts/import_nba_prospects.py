@@ -21,6 +21,28 @@ from app.utils.nameutils import normalized_name
 URL = "https://www.nba.com/draft/2026/prospects"
 SOURCE = "NBA.com 2026 Draft Prospects"
 
+# B0-K1: stats provenance for importer-created prospects.  estimate_stats()
+# produces position-baseline heuristic values (not real stats), so we tag
+# them low-confidence.  These are written on every importer create/update
+# UNLESS the matched row is already ``seed_manual`` (hand-curated), in which
+# case the seed provenance is preserved (see _apply_importer_stats_provenance).
+STATS_SOURCE = "nba_importer_heuristic"
+STATS_CONFIDENCE = 0.30
+
+
+def _apply_importer_stats_provenance(prospect: Prospect) -> None:
+    """Tag a prospect with importer-heuristic stats provenance.
+
+    Guarded: never downgrades a ``seed_manual`` row.  This is what keeps the
+    NBA.com scrape from relabelling a canonical seed prospect (e.g.
+    "Darius Acuff Jr." matched via normalized name from NBA.com's
+    "Darius Acuff") as heuristic data.
+    """
+    if prospect.stats_source == "seed_manual":
+        return
+    prospect.stats_source = STATS_SOURCE
+    prospect.stats_confidence = STATS_CONFIDENCE
+
 
 def main() -> None:
     Base.metadata.create_all(bind=engine)
@@ -135,6 +157,11 @@ def build_prospect(row: dict[str, Any], board_index: int) -> Prospect:
         archetype=archetype(position=position, row=row),
         upside_score=estimates["upside_score"],
         risk_score=estimates["risk_score"],
+        # B0-K1: mark these as heuristic estimates (not real stats).  The
+        # constant is defined at module scope and mirrored by audit / ranking
+        # tooling to distinguish seed_manual vs importer data.
+        stats_source=STATS_SOURCE,
+        stats_confidence=STATS_CONFIDENCE,
     )
 
 
@@ -144,6 +171,10 @@ def update_bio(prospect: Prospect, row: dict[str, Any]) -> None:
     prospect.height = height(row)
     prospect.weight = to_int(row.get("weightLbs")) or prospect.weight
     prospect.school_or_league = school(row)
+    # B0-K1: refresh stats provenance on update, but never downgrade a
+    # seed_manual canonical row (e.g. "Darius Acuff Jr." matched from the
+    # NBA.com "Darius Acuff" displayName via normalized name).
+    _apply_importer_stats_provenance(prospect)
 
 
 def upsert_report(db, prospect: Prospect, row: dict[str, Any]) -> None:

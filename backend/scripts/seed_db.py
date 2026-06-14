@@ -642,6 +642,12 @@ def _upsert_prospect(
         "archetype": prospect_data[13],
         "upside_score": prospect_data[14],
         "risk_score": prospect_data[15],
+        # B0-K1: seed_db rows are hand-curated, so their stats are the most
+        # authoritative in the pool.  Mark provenance unconditionally -- this
+        # is also what lets the importer avoid downgrading a reclaimed row
+        # (it checks for seed_manual before overwriting).
+        "stats_source": "seed_manual",
+        "stats_confidence": 0.85,
     }
     if prospect is None:
         prospect = Prospect(**values)
