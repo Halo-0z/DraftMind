@@ -2867,3 +2867,255 @@ class TestPredictionCalibratedSelection:
         assert reach_candidate["prediction_sort_score"] is not None
         assert reach_candidate["prediction_selection_rank"] > 1
         assert reach_candidate["prediction_selection_applied"] is False
+
+
+class TestMarketPriorAvailabilityGuardrail:
+    """B0-I: high market-prior availability floor.
+
+    Reproduces the Keaton Wagler abnormal-slide shape inside the conftest
+    fixture: a top-market-prior prospect whose raw final_score sits well
+    below the original top of the board must NOT slip past his projected
+    range just because the 8.0 reach guardrail treats him as "too far
+    below the top".  The availability floor lifts him into contention on
+    his in-range pick.
+    """
+
+    @staticmethod
+    def _seed_protected_top_market_prospect(
+        db_session: Session,
+        *,
+        upside_score: float = 78.0,
+        risk_score: float = 30.0,
+        pick_no: int = 2,
+        team_abbr: str = "SAS",
+        name: str = "Protected Lottery Guard",
+    ) -> Prospect:
+        """Seed a prospect the consensus sees as a top-market-pick but whose
+        raw final_score sits well below the original top of the board.
+
+        Default upside=78 lands his final_score in the (8, 16] gap window
+        relative to the natural #2 top (Mikel Brown Jr., final ~74.8) — the
+        same shape as the real Keaton Wagler case.  ``pick_no`` /
+        ``team_abbr`` default to the first conftest pick (SAS at #2) so the
+        TeamPickProjection matches the in-range pick.
+        """
+        team = _team_by_abbr(db_session, team_abbr)
+        protected = Prospect(
+            year=2026,
+            name=name,
+            position="PG",
+            age=19.0,
+            height="6-4",
+            weight=185,
+            school_or_league="Mock",
+            ppg=12.0,
+            rpg=3.0,
+            apg=4.0,
+            fg_pct=43.0,
+            three_pct=34.0,
+            ft_pct=76.0,
+            stocks=1.0,
+            archetype="Combo guard",
+            upside_score=upside_score,
+            risk_score=risk_score,
+        )
+        db_session.add(protected)
+        db_session.flush()
+        db_session.add_all(
+            [
+                ProspectDraftProjection(
+                    prospect_id=protected.id,
+                    year=2026,
+                    expected_pick=2,
+                    draft_range_min=1,
+                    draft_range_max=5,
+                    tier=1,
+                    source="consensus_reference",
+                    confidence=0.85,
+                    notes="Consensus sees this prospect as a top-2 talent.",
+                ),
+                TeamPickProjection(
+                    year=2026,
+                    pick_no=pick_no,
+                    team_id=team.id,
+                    prospect_id=protected.id,
+                    projection_type="consensus_mock",
+                    source="consensus_reference",
+                    confidence=0.72,
+                    notes="Matching team signal at the in-range pick.",
+                ),
+            ]
+        )
+        db_session.commit()
+        return protected
+
+    def test_high_market_prior_floor_lifts_prospect_near_original_top(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        """The availability floor must lift the protected prospect's
+        prediction_sort_score close to the original top and surface the
+        protection note.  Without calibration his raw final_score would
+        leave him ~17 points behind the natural top; with calibration the
+        floor pins him at original_top - 0.5 (a near-tie from below)."""
+        protected = self._seed_protected_top_market_prospect(db_session)
+
+        # Without calibration, the prospect is buried by his raw score.
+        baseline = _base_projection_response(client)
+        assert baseline["selected_player"]["prospect"]["name"] == "Mikel Brown Jr."
+        baseline_protected = next(
+            c for c in baseline["candidate_board"]
+            if c["prospect"]["id"] == protected.id
+        )
+        assert baseline_protected["scores"]["final_score"] < 70.0  # well below top
+
+        # With calibration: the floor lifts him to a near-tie with the top.
+        pick = _base_projection_response(client, calibration=True)
+        protected_candidate = next(
+            c for c in pick["candidate_board"]
+            if c["prospect"]["id"] == protected.id
+        )
+        # Floor = original_top final - 0.5.  Mikel's #2 final_score is ~74.8,
+        # so the floor is ~74.3.
+        top_final = pick["candidate_board"][0]["scores"]["final_score"]
+        assert protected_candidate["prediction_sort_score"] == pytest.approx(
+            top_final - 0.5, abs=0.01
+        )
+        assert protected_candidate["prediction_selection_rank"] == 2
+        assert any(
+            "availability protection" in note.lower()
+            for note in protected_candidate.get("prediction_selection_notes") or []
+        )
+
+    def test_high_market_prior_generic_floor_weaker_than_team_match_floor(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        """Without a matching TeamPickProjection for the current pick, the
+        floor uses the larger GENERIC_FLOOR_GAP (2.0) and sits lower than
+        the team-match floor (0.5).  This is the user-spec requirement:
+        a same-team market signal should be able to win a near-tie that a
+        team-less signal would lose.
+
+        We seed the protected prospect at #2 (SAS) but route the
+        TeamPickProjection to a different pick so the current pick has no
+        matching team signal.
+        """
+        # Team signal deliberately targets pick #10 (also SAS, but a later
+        # pick), so the in-range pick #2 has NO matching TeamPickProjection.
+        protected = self._seed_protected_top_market_prospect(
+            db_session, pick_no=10,
+        )
+
+        pick = _base_projection_response(client, calibration=True)
+        protected_candidate = next(
+            c for c in pick["candidate_board"]
+            if c["prospect"]["id"] == protected.id
+        )
+
+        top_final = pick["candidate_board"][0]["scores"]["final_score"]
+        # Generic floor = original_top - 2.0 (vs the team-match 0.5).
+        assert protected_candidate["prediction_sort_score"] == pytest.approx(
+            top_final - 2.0, abs=0.01
+        )
+        notes = protected_candidate.get("prediction_selection_notes") or []
+        assert any("availability protection" in note.lower() for note in notes)
+        # And the note must NOT claim a matching team signal at this pick.
+        assert all(
+            "matching team projection signal" not in note for note in notes
+        )
+
+    def test_high_market_prior_floor_off_when_calibration_disabled(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        """use_prediction_calibration=False must keep the v1 selection: the
+        protected prospect (lower raw final_score) stays behind Mikel Brown
+        Jr. even though the consensus sees him as a top-2 talent."""
+        self._seed_protected_top_market_prospect(db_session)
+
+        pick = _base_projection_response(client)  # calibration defaults to False
+        selected = pick["selected_player"]
+
+        assert selected["prospect"]["name"] == "Mikel Brown Jr."
+        assert selected["prediction_sort_score"] is None
+        joined_log = "\n".join(pick["decision_log"]).lower()
+        assert "availability protection" not in joined_log
+
+    def test_high_market_prior_hard_rejected_does_not_win(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        """When the raw final_score gap is enormous (> HARD_REJECT 20),
+        DraftMind's own model vetoes the consensus and the floor must NOT
+        promote the prospect.  We seed a prospect with an extremely low
+        upside so the gap to the original top exceeds the hard-reject
+        threshold."""
+        team = _team_by_abbr(db_session, "SAS")
+        vetoed = Prospect(
+            year=2026,
+            name="Vetoed Reach Prospect",
+            position="C",
+            age=21.0,
+            height="6-11",
+            weight=235,
+            school_or_league="Mock",
+            ppg=4.0,
+            rpg=3.0,
+            apg=0.5,
+            fg_pct=38.0,
+            three_pct=18.0,
+            ft_pct=55.0,
+            stocks=0.3,
+            archetype="Long-term project",
+            upside_score=40.0,
+            risk_score=70.0,
+        )
+        db_session.add(vetoed)
+        db_session.flush()
+        db_session.add_all(
+            [
+                ProspectDraftProjection(
+                    prospect_id=vetoed.id,
+                    year=2026,
+                    expected_pick=2,
+                    draft_range_min=1,
+                    draft_range_max=5,
+                    tier=1,
+                    source="consensus_reference",
+                    confidence=0.90,
+                    notes="Consensus loves him but DraftMind strongly disagrees.",
+                ),
+                TeamPickProjection(
+                    year=2026,
+                    pick_no=2,
+                    team_id=team.id,
+                    prospect_id=vetoed.id,
+                    projection_type="consensus_mock",
+                    source="consensus_reference",
+                    confidence=0.72,
+                    notes="Strong same-team consensus signal.",
+                ),
+            ]
+        )
+        db_session.commit()
+
+        pick = _base_projection_response(client, calibration=True)
+        selected = pick["selected_player"]
+
+        # DraftMind's own top (Mikel Brown Jr.) is honoured; the floor was
+        # not applied.
+        assert selected["prospect"]["name"] == "Mikel Brown Jr."
+        assert any(
+            "vetoed" in line.lower() for line in pick["decision_log"]
+        )
+        # And the vetoed prospect (if surfaced in candidate_board) did not
+        # get the availability-protection note.
+        for candidate in pick.get("candidate_board", []):
+            if candidate["prospect"]["name"] == "Vetoed Reach Prospect":
+                for note in candidate.get("prediction_selection_notes") or []:
+                    assert "availability protection" not in note.lower()
