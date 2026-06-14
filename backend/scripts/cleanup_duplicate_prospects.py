@@ -29,13 +29,27 @@ Merge policy (per normalized-name group with >1 row):
 The script NEVER touches the .db file on disk directly and NEVER commits
 unless ``--apply`` is passed.  It is safe to re-run.
 
+By default a duplicate carrying a ScoutingReport is blocked (the report is
+not silently dropped).  Pass ``--migrate-scouting-reports`` to allow the
+report rows to be reassigned to the canonical prospect before the duplicate
+is deleted; this only fires for rows whose sole dependency is
+ScoutingReport, and only when combined with ``--apply``.  The three "hard"
+dependencies (ProspectDraftProjection, TeamPickProjection,
+ProspectScoutingProfile) always block.
+
 Usage::
 
     cd D:\\DraftMind\\backend
     # Dry run (default):
     D:\\anaconda\\python.exe scripts\\cleanup_duplicate_prospects.py
-    # Actually apply:
+    # Dry run with migration planning:
+    D:\\anaconda\\python.exe scripts\\cleanup_duplicate_prospects.py \\
+        --migrate-scouting-reports
+    # Actually apply (plain deletion of dependency-free duplicates):
     D:\\anaconda\\python.exe scripts\\cleanup_duplicate_prospects.py --apply
+    # Actually apply with ScoutingReport migration:
+    D:\\anaconda\\python.exe scripts\\cleanup_duplicate_prospects.py \\
+        --apply --migrate-scouting-reports
 """
 
 from __future__ import annotations
@@ -43,6 +57,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -91,7 +106,7 @@ def _pick_canonical(
     return min(group, key=lambda p: p.id)
 
 
-def plan_cleanup(db) -> list[dict]:
+def plan_cleanup(db, *, migrate_scouting_reports: bool = False) -> list[dict]:
     """Return the list of planned merge actions (no DB writes).
 
     Each action records, for the row we plan to delete, whether it has any
@@ -99,6 +114,13 @@ def plan_cleanup(db) -> list[dict]:
     ProspectDraftProjection, TeamPickProjection, ScoutingReport,
     ProspectScoutingProfile.  Any such dependency blocks auto-apply (the
     action is tagged with a specific ``warning`` for manual review).
+
+    When ``migrate_scouting_reports`` is True, a duplicate row whose *only*
+    dependency is ScoutingReport becomes eligible for an explicit migration:
+    the action's ``warning`` is cleared and ``migrate_scouting_reports`` is
+    set to True on the action, signalling that apply_cleanup may reassign
+    those ScoutingReport rows to the canonical prospect before deleting the
+    duplicate.  Any other dependency combination still blocks.
     """
     all_prospects = list(db.scalars(select(Prospect).where(Prospect.year == 2026)))
     projections = list(
@@ -159,70 +181,120 @@ def plan_cleanup(db) -> list[dict]:
                 "delete_has_team_projection": has_tpp,
                 "delete_has_scouting_report": has_report,
                 "delete_has_scouting_profile": has_profile,
+                # Whether apply_cleanup is allowed to migrate the
+                # ScoutingReport rows from delete_id -> keep_id.  Only set
+                # True in migrate mode AND when ScoutingReport is the sole
+                # dependency.
+                "migrate_scouting_reports": False,
                 "warning": None,
             }
-            # If the row we are about to delete carries ANY dependency, flag
-            # it with a specific reason instead of silently dropping data.
-            # The first hit wins for the warning text; all flags stay on the
-            # action dict so callers/tests can inspect the full picture.
-            deps: list[tuple[bool, str]] = [
-                (has_proj, "ProspectDraftProjection"),
-                (has_tpp, "TeamPickProjection"),
-                (has_report, "ScoutingReport"),
-                (has_profile, "ProspectScoutingProfile"),
-            ]
-            blocking = [label for flag, label in deps if flag]
-            if blocking:
-                action["warning"] = (
-                    f"duplicate row has {'+'.join(blocking)}; "
-                    "review manually before applying"
-                )
+            # Dependency evaluation.  The three "hard" dependencies
+            # (projection, team-pick, scouting-profile) always block.  A
+            # lone ScoutingReport blocks in default mode but is migratable
+            # in migrate mode.
+            hard_blocking: list[str] = []
+            if has_proj:
+                hard_blocking.append("ProspectDraftProjection")
+            if has_tpp:
+                hard_blocking.append("TeamPickProjection")
+            if has_profile:
+                hard_blocking.append("ProspectScoutingProfile")
+
+            migratable = (
+                migrate_scouting_reports
+                and has_report
+                and not hard_blocking
+            )
+
+            if migratable:
+                # Eligible for explicit migration: clear the warning so the
+                # action is auto-applicable (under --apply --migrate).
+                action["migrate_scouting_reports"] = True
+            else:
+                # Build the warning from every blocking dependency, including
+                # ScoutingReport when not migratable.
+                blocking = list(hard_blocking)
+                if has_report:
+                    blocking.append("ScoutingReport")
+                if blocking:
+                    action["warning"] = (
+                        f"duplicate row has {'+'.join(blocking)}; "
+                        "review manually before applying"
+                    )
             actions.append(action)
     return actions
 
 
-def apply_cleanup(db, safe_actions: list[dict]) -> int:
+def apply_cleanup(
+    db,
+    safe_actions: list[dict],
+    *,
+    migrate_scouting_reports: bool = False,
+) -> int:
     """Commit the deletion of duplicate rows for ``safe_actions``.
 
     ``safe_actions`` must already be the warning-filtered subset (the caller
     is responsible for excluding any action whose ``warning`` is set).
-    Inside the transaction we re-check every ``delete_id`` against all four
-    dependency types -- ProspectDraftProjection, TeamPickProjection,
-    ScoutingReport, ProspectScoutingProfile -- and refuse (raising
-    ``RuntimeError``) if any linkage appeared since planning.  The caller
-    has not committed yet in that case.
 
-    Returns the number of rows deleted.  Commits the transaction.
+    Dependency handling inside the transaction:
+
+      * ProspectDraftProjection, TeamPickProjection, ProspectScoutingProfile
+        ALWAYS block deletion (raise ``RuntimeError``), regardless of flags.
+        These dependencies carry irreplaceable model data and must never be
+        silently dropped or reassigned by this script.
+      * ScoutingReport blocks deletion in the default path.  When the caller
+        passes ``migrate_scouting_reports=True`` AND an action is marked
+        ``migrate_scouting_reports`` (i.e. ScoutingReport is the row's sole
+        dependency), the report rows are reassigned from ``delete_id`` to
+        ``keep_id`` before the duplicate Prospect row is deleted.  No
+        ScoutingReport row is ever dropped -- it is either moved or the
+        deletion is refused.
+
+    Returns the number of Prospect rows deleted.  Commits the transaction.
     """
     if not safe_actions:
         return 0
 
     to_delete_ids = [a["delete_id"] for a in safe_actions]
 
-    # Defensive in-transaction re-check: refuse to delete any row that still
-    # has ANY of the four dependency types attached.  This catches the case
-    # where data changed between plan_cleanup() and apply_cleanup() (e.g.
-    # another importer added a scouting report to the duplicate).
-    protected: dict[int, str] = {}
-    for model, label in (
+    # Defensive in-transaction re-check.  The three "hard" dependencies are
+    # unconditional blockers.  ScoutingReport is a blocker unless this call
+    # is in migrate mode AND the specific action opted into migration.
+    hard_models: list[tuple[Any, str]] = [
         (ProspectDraftProjection, "ProspectDraftProjection"),
         (TeamPickProjection, "TeamPickProjection"),
-        (ScoutingReport, "ScoutingReport"),
         (ProspectScoutingProfile, "ProspectScoutingProfile"),
-    ):
-        # db.scalars() already returns scalar values (the prospect_id), so
-        # we iterate directly -- no tuple unpacking.
+    ]
+    protected: dict[int, str] = {}
+    for model, label in hard_models:
         for pid in db.scalars(
             select(model.prospect_id).where(
                 model.prospect_id.in_(to_delete_ids)
             )
         ):
             pid = int(pid)
-            # Accumulate all dependency labels per pid so the error message
-            # names every offending linkage, not just the first found.
             protected.setdefault(pid, label)
             if label not in protected[pid]:
                 protected[pid] = f"{protected[pid]}+{label}"
+
+    # ScoutingReport: block per-row unless that specific action opted in to
+    # migration AND we are in migrate mode.
+    migrate_ids = {
+        a["delete_id"]
+        for a in safe_actions
+        if migrate_scouting_reports and a.get("migrate_scouting_reports")
+    }
+    for pid in db.scalars(
+        select(ScoutingReport.prospect_id).where(
+            ScoutingReport.prospect_id.in_(to_delete_ids)
+        )
+    ):
+        pid = int(pid)
+        if pid in migrate_ids:
+            continue  # handled by the migration step below
+        protected.setdefault(pid, "ScoutingReport")
+        if "ScoutingReport" not in protected[pid]:
+            protected[pid] = f"{protected[pid]}+ScoutingReport"
 
     if protected:
         offenders = ", ".join(
@@ -233,6 +305,28 @@ def apply_cleanup(db, safe_actions: list[dict]) -> int:
             f"{offenders}; row(s) gained dependency linkage since "
             "planning. Re-run plan_cleanup."
         )
+
+    # Migrate ScoutingReport rows for the opt-in actions.  Reassign
+    # prospect_id from delete_id -> keep_id; never delete a report.  If the
+    # canonical row already has ScoutingReports, the migrated rows simply
+    # coexist (ScoutingReport has no uniqueness constraint on
+    # (prospect_id, source), so this is safe and loses nothing).
+    migrated_reports = 0
+    for a in safe_actions:
+        if not (migrate_scouting_reports and a.get("migrate_scouting_reports")):
+            continue
+        delete_id = a["delete_id"]
+        keep_id = a["keep_id"]
+        reports = list(
+            db.scalars(
+                select(ScoutingReport).where(
+                    ScoutingReport.prospect_id == delete_id
+                )
+            )
+        )
+        for report in reports:
+            report.prospect_id = keep_id
+            migrated_reports += 1
 
     deleted = (
         db.query(Prospect)
@@ -250,41 +344,90 @@ def main() -> None:
         action="store_true",
         help="actually commit the merge (default is dry-run)",
     )
+    parser.add_argument(
+        "--migrate-scouting-reports",
+        action="store_true",
+        dest="migrate_scouting_reports",
+        help=(
+            "allow a duplicate row whose ONLY dependency is ScoutingReport "
+            "to have its report rows reassigned to the canonical prospect "
+            "before deletion.  Default is off (such rows are blocked).  "
+            "Has no effect unless --apply is also passed."
+        ),
+    )
     args = parser.parse_args()
 
     with SessionLocal() as db:
-        actions = plan_cleanup(db)
+        actions = plan_cleanup(
+            db, migrate_scouting_reports=args.migrate_scouting_reports
+        )
         if not actions:
             print("No duplicate prospect groups found. Nothing to do.")
             return
 
         mode = "APPLY" if args.apply else "DRY-RUN"
+        if args.migrate_scouting_reports:
+            mode += " +MIGRATE-SCOUTING-REPORTS"
         print(f"=== cleanup_duplicate_prospects ({mode}) ===")
         for a in actions:
-            tag = "  [WARN] " if a["warning"] else "  "
-            print(f"{tag}normalized={a['normalized']!r}: "
+            if a.get("migrate_scouting_reports"):
+                tag = "  [MIGRATE]"
+            elif a["warning"]:
+                tag = "  [WARN]  "
+            else:
+                tag = "  "
+            print(f"{tag} normalized={a['normalized']!r}: "
                   f"keep id={a['keep_id']} ({a['keep_name']}), "
                   f"delete id={a['delete_id']} ({a['delete_name']})")
-            if a["warning"]:
-                print(f"         ! {a['warning']}")
+            if a.get("migrate_scouting_reports"):
+                # Count the ScoutingReport rows that would move, for an
+                # actionable dry-run message.
+                report_total = (
+                    db.query(ScoutingReport)
+                    .filter(ScoutingReport.prospect_id == a["delete_id"])
+                    .count()
+                )
+                print(
+                    f"           would move {report_total} ScoutingReport "
+                    f"row(s) from {a['delete_id']} -> {a['keep_id']} "
+                    f"({a['keep_name']})"
+                )
+                print(f"           would delete duplicate prospect id={a['delete_id']}")
+            elif a["warning"]:
+                print(f"           ! {a['warning']}")
 
-        # Filter out actions that carry a warning -- those need manual review
-        # and are never auto-applied even with --apply.
+        # "safe" = auto-applicable actions: either no warning at all, or a
+        # migration-opted action (warning cleared by plan_cleanup).
         safe_actions = [a for a in actions if not a["warning"]]
         skipped = [a for a in actions if a["warning"]]
         if skipped:
             print(f"\n{len(skipped)} action(s) skipped (need manual review).")
 
         if not args.apply:
-            print(f"\nDRY-RUN: would delete {len(safe_actions)} duplicate row(s). "
-                  "Re-run with --apply to commit.")
+            print(
+                f"\nDRY-RUN: would delete {len(safe_actions)} duplicate "
+                "row(s)."
+            )
+            if args.migrate_scouting_reports and any(
+                a.get("migrate_scouting_reports") for a in safe_actions
+            ):
+                print(
+                    "Re-run with --apply --migrate-scouting-reports to "
+                    "commit."
+                )
+            else:
+                print("Re-run with --apply to commit.")
             return
 
         if not safe_actions:
             print("\nNo safe auto-merge actions; nothing committed.")
             return
 
-        deleted = apply_cleanup(db, safe_actions)
+        deleted = apply_cleanup(
+            db,
+            safe_actions,
+            migrate_scouting_reports=args.migrate_scouting_reports,
+        )
         print(f"\nAPPLY: deleted {deleted} duplicate row(s).")
 
 

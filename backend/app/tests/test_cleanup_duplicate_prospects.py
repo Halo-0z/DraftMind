@@ -303,3 +303,259 @@ def test_apply_cleanup_refuses_to_delete_row_with_team_pick_projection(
 
     db_session.expire_all()
     assert db_session.get(Prospect, duplicate_id) is not None
+
+
+# ===========================================================================
+# B0-J2: explicit ScoutingReport migration path
+# (default off; only --migrate-scouting-reports enables it, and only for rows
+# whose SOLE dependency is ScoutingReport).
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Required case B0-J2-1: default plan_cleanup still warns on ScoutingReport
+# (the migration flag defaults to False).  Already covered by
+# test_plan_cleanup_warns_when_duplicate_has_scouting_report above; we add an
+# explicit assertion that plan_cleanup(db) (no kwarg) also leaves
+# migrate_scouting_reports=False on the action so the default path is
+# provably inert.
+# ---------------------------------------------------------------------------
+
+
+def test_default_plan_cleanup_leaves_migration_off_for_scouting_report(
+    db_session: Session,
+) -> None:
+    canonical = _add_prospect(db_session, name="Darius Acuff Jr.")
+    duplicate = _add_prospect(db_session, name="Darius Acuff", position="SG")
+    _add_projection(db_session, prospect=canonical)
+    _add_scouting_report(db_session, prospect=duplicate)
+    db_session.commit()
+
+    actions = plan_cleanup(db_session)  # default: migrate_scouting_reports=False
+    assert len(actions) == 1
+    a = actions[0]
+    assert a["warning"] is not None
+    assert a["migrate_scouting_reports"] is False
+
+
+# ---------------------------------------------------------------------------
+# Required case B0-J2-2: migrate-mode plan_cleanup marks a lone-ScoutingReport
+# duplicate as migratable (warning cleared, migrate flag set).
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_plan_cleanup_marks_lone_scouting_report_as_migratable(
+    db_session: Session,
+) -> None:
+    canonical = _add_prospect(db_session, name="Darius Acuff Jr.")
+    duplicate = _add_prospect(db_session, name="Darius Acuff", position="SG")
+    _add_projection(db_session, prospect=canonical)
+    _add_scouting_report(db_session, prospect=duplicate)
+    db_session.commit()
+
+    actions = plan_cleanup(db_session, migrate_scouting_reports=True)
+    assert len(actions) == 1
+    a = actions[0]
+    assert a["migrate_scouting_reports"] is True
+    assert a["warning"] is None  # auto-applicable in migrate mode
+    assert a["delete_has_scouting_report"] is True
+
+
+# ---------------------------------------------------------------------------
+# Required case B0-J2-3: apply_cleanup in migrate mode reassigns the
+# ScoutingReport prospect_id from duplicate -> canonical, then deletes the
+# duplicate.  No report is dropped.
+# ---------------------------------------------------------------------------
+
+
+def test_apply_cleanup_migrates_lone_scouting_report_and_deletes_duplicate(
+    db_session: Session,
+) -> None:
+    canonical = _add_prospect(db_session, name="Darius Acuff Jr.")
+    duplicate = _add_prospect(db_session, name="Darius Acuff", position="SG")
+    _add_projection(db_session, prospect=canonical)
+    report = _add_scouting_report(db_session, prospect=duplicate)
+    db_session.commit()
+    duplicate_id = duplicate.id
+    canonical_id = canonical.id
+    report_id = report.id
+
+    actions = plan_cleanup(db_session, migrate_scouting_reports=True)
+    safe_actions = [a for a in actions if not a["warning"]]
+    assert len(safe_actions) == 1
+
+    deleted = apply_cleanup(
+        db_session, safe_actions, migrate_scouting_reports=True
+    )
+    assert deleted == 1
+
+    db_session.expire_all()
+    # Duplicate prospect gone.
+    assert db_session.get(Prospect, duplicate_id) is None
+    assert db_session.get(Prospect, canonical_id) is not None
+    # ScoutingReport SURVIVES, now attached to canonical.
+    surviving = db_session.get(ScoutingReport, report_id)
+    assert surviving is not None
+    assert surviving.prospect_id == canonical_id
+
+
+# ---------------------------------------------------------------------------
+# Required case B0-J2-3b: when canonical ALREADY has a ScoutingReport, the
+# migrated report coexists (no uniqueness constraint, nothing dropped).  This
+# is the conservative "case C" behaviour required by the spec.
+# ---------------------------------------------------------------------------
+
+
+def test_apply_cleanup_migration_coexists_with_canonical_report(
+    db_session: Session,
+) -> None:
+    canonical = _add_prospect(db_session, name="Darius Acuff Jr.")
+    duplicate = _add_prospect(db_session, name="Darius Acuff", position="SG")
+    _add_projection(db_session, prospect=canonical)
+    canonical_report = _add_scouting_report(db_session, prospect=canonical)
+    duplicate_report = _add_scouting_report(db_session, prospect=duplicate)
+    db_session.commit()
+
+    actions = plan_cleanup(db_session, migrate_scouting_reports=True)
+    safe_actions = [a for a in actions if not a["warning"]]
+    deleted = apply_cleanup(
+        db_session, safe_actions, migrate_scouting_reports=True
+    )
+    assert deleted == 1
+
+    db_session.expire_all()
+    # BOTH reports survive and are attached to canonical.
+    assert db_session.get(ScoutingReport, canonical_report.id) is not None
+    migrated = db_session.get(ScoutingReport, duplicate_report.id)
+    assert migrated is not None
+    assert migrated.prospect_id == canonical.id
+
+
+# ---------------------------------------------------------------------------
+# Required case B0-J2-4: ScoutingReport + TeamPickProjection still blocks
+# even in migrate mode (TeamPickProjection is a hard dependency).
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_mode_still_blocks_scouting_report_plus_team_pick_projection(
+    db_session: Session,
+) -> None:
+    canonical = _add_prospect(db_session, name="Darius Acuff Jr.")
+    duplicate = _add_prospect(db_session, name="Darius Acuff", position="SG")
+    _add_projection(db_session, prospect=canonical)
+    _add_scouting_report(db_session, prospect=duplicate)
+    _add_team_pick_projection(db_session, prospect=duplicate)
+    db_session.commit()
+
+    actions = plan_cleanup(db_session, migrate_scouting_reports=True)
+    assert len(actions) == 1
+    a = actions[0]
+    assert a["migrate_scouting_reports"] is False
+    assert a["warning"] is not None
+    assert "TeamPickProjection" in a["warning"]
+
+
+# ---------------------------------------------------------------------------
+# Required case B0-J2-5: ScoutingReport + ProspectScoutingProfile still
+# blocks in migrate mode.
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_mode_still_blocks_scouting_report_plus_scouting_profile(
+    db_session: Session,
+) -> None:
+    canonical = _add_prospect(db_session, name="Darius Acuff Jr.")
+    duplicate = _add_prospect(db_session, name="Darius Acuff", position="SG")
+    _add_projection(db_session, prospect=canonical)
+    _add_scouting_report(db_session, prospect=duplicate)
+    _add_scouting_profile(db_session, prospect=duplicate)
+    db_session.commit()
+
+    actions = plan_cleanup(db_session, migrate_scouting_reports=True)
+    assert len(actions) == 1
+    a = actions[0]
+    assert a["migrate_scouting_reports"] is False
+    assert a["warning"] is not None
+    assert "ProspectScoutingProfile" in a["warning"]
+
+
+# ---------------------------------------------------------------------------
+# Required case B0-J2-6: a duplicate carrying a ProspectDraftProjection is
+# NEVER migratable -- projection is a hard dependency even in migrate mode.
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_mode_blocks_duplicate_with_its_own_projection(
+    db_session: Session,
+) -> None:
+    canonical = _add_prospect(db_session, name="Darius Acuff Jr.")
+    duplicate = _add_prospect(db_session, name="Darius Acuff", position="SG")
+    _add_projection(db_session, prospect=canonical)
+    _add_projection(db_session, prospect=duplicate)  # duplicate has its own
+    db_session.commit()
+
+    actions = plan_cleanup(db_session, migrate_scouting_reports=True)
+    assert len(actions) == 1
+    a = actions[0]
+    assert a["migrate_scouting_reports"] is False
+    assert a["warning"] is not None
+    assert "ProspectDraftProjection" in a["warning"]
+
+
+# ---------------------------------------------------------------------------
+# Required case B0-J2-7: the plain dependency-free deletion path still works
+# (regression guard that adding the migrate flag did not break it).
+# ---------------------------------------------------------------------------
+
+
+def test_dependency_free_duplicate_still_deleted_in_migrate_mode(
+    db_session: Session,
+) -> None:
+    canonical = _add_prospect(db_session, name="Darius Acuff Jr.")
+    duplicate = _add_prospect(db_session, name="Darius Acuff", position="SG")
+    _add_projection(db_session, prospect=canonical)
+    db_session.commit()
+    duplicate_id = duplicate.id
+
+    actions = plan_cleanup(db_session, migrate_scouting_reports=True)
+    safe_actions = [a for a in actions if not a["warning"]]
+    assert len(safe_actions) == 1
+    # No migration was needed for this action.
+    assert safe_actions[0]["migrate_scouting_reports"] is False
+
+    deleted = apply_cleanup(
+        db_session, safe_actions, migrate_scouting_reports=True
+    )
+    assert deleted == 1
+    db_session.expire_all()
+    assert db_session.get(Prospect, duplicate_id) is None
+
+
+# ---------------------------------------------------------------------------
+# Extra safety: apply_cleanup WITHOUT the migrate flag must still refuse a
+# lone-ScoutingReport duplicate, even if the action dict claims
+# migrate_scouting_reports=True (defence against a stale/forged action).
+# ---------------------------------------------------------------------------
+
+
+def test_apply_without_migrate_flag_still_blocks_scouting_report(
+    db_session: Session,
+) -> None:
+    canonical = _add_prospect(db_session, name="Darius Acuff Jr.")
+    duplicate = _add_prospect(db_session, name="Darius Acuff", position="SG")
+    _add_projection(db_session, prospect=canonical)
+    _add_scouting_report(db_session, prospect=duplicate)
+    db_session.commit()
+
+    # Plan in migrate mode (action becomes auto-applicable), but apply
+    # WITHOUT passing migrate_scouting_reports=True.  The in-txn re-check
+    # must still block the deletion because the apply call did not opt in.
+    actions = plan_cleanup(db_session, migrate_scouting_reports=True)
+    safe_actions = [a for a in actions if not a["warning"]]
+    assert len(safe_actions) == 1
+
+    with pytest.raises(RuntimeError, match="protected duplicate row"):
+        apply_cleanup(db_session, safe_actions)  # migrate flag defaults False
+
+    db_session.expire_all()
+    assert db_session.get(Prospect, duplicate.id) is not None
