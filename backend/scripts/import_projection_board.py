@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 from app.database import Base, SessionLocal, engine
 from app.models import Prospect, ProspectDraftProjection, Team, TeamPickProjection
+from app.utils.nameutils import normalized_name
 
 
 DEFAULT_SOURCE = "seed_projection"
@@ -48,7 +49,14 @@ def import_prospect_projection_csv(db: Session, csv_path: str | Path) -> ImportS
             _skip(summary, row_no, "missing prospect_name")
             continue
 
-        prospect = _find_prospect(db, year=year, name=prospect_name)
+        try:
+            prospect = _find_prospect(db, year=year, name=prospect_name)
+        except ValueError as exc:
+            # Ambiguous normalized-name match (duplicate prospects).  Record
+            # an explicit skip so the operator sees the data-quality problem
+            # instead of a projection silently landing on the wrong row.
+            _skip(summary, row_no, f"ambiguous prospect: {exc}")
+            continue
         if prospect is None:
             _skip(summary, row_no, f"prospect not found: {prospect_name!r}")
             continue
@@ -104,7 +112,14 @@ def import_team_pick_projection_csv(db: Session, csv_path: str | Path) -> Import
         if team is None:
             _skip(summary, row_no, f"team not found: {team_abbr!r}")
             continue
-        prospect = _find_prospect(db, year=year, name=prospect_name)
+        try:
+            prospect = _find_prospect(db, year=year, name=prospect_name)
+        except ValueError as exc:
+            # Ambiguous normalized-name match (duplicate prospects).  Record
+            # an explicit skip so the operator sees the data-quality problem
+            # instead of a projection silently landing on the wrong row.
+            _skip(summary, row_no, f"ambiguous prospect: {exc}")
+            continue
         if prospect is None:
             _skip(summary, row_no, f"prospect not found: {prospect_name!r}")
             continue
@@ -158,12 +173,64 @@ def _read_csv_rows(csv_path: str | Path):
 
 
 def _find_prospect(db: Session, *, year: int, name: str) -> Prospect | None:
-    normalized = name.strip().lower()
-    return (
+    """Resolve a CSV/seed prospect name to a single Prospect row.
+
+    Resolution is canonical-aware so a CSV ``Darius Acuff`` lands on the
+    canonical ``Darius Acuff Jr.`` row even when a bare ``Darius Acuff``
+    duplicate also exists in the pool.  Algorithm:
+
+      1. Build the normalized-name group for ``name`` (every 2026 prospect
+         whose name normalizes to the same key).
+      2. If the group is empty -> return None (caller records "not found").
+      3. If exactly one row has a ProspectDraftProjection and the group has
+         >1 member, return that canonical row.  This is the rule that keeps
+         a projection off a duplicate.
+      4. If the group has exactly one member, return it (normal happy path,
+         includes the case where the name is an exact display match).
+      5. Otherwise the group is genuinely ambiguous (no projection, or
+         multiple projections) -> raise ``ValueError``.  The caller records
+         an explicit skip so the projection is never written to the wrong
+         row.
+
+    Step 3 is deliberately applied even when ``name`` is itself an exact
+    display match for one of the duplicates: that is exactly the situation
+    the B0-J audit found (CSV "Darius Acuff" silently matching the wrong
+    duplicate).
+    """
+    target_key = normalized_name(name)
+    if not target_key:
+        return None
+
+    candidates = (
         db.query(Prospect)
         .filter(Prospect.year == year)
-        .filter(Prospect.name.ilike(normalized))
-        .first()
+        .all()
+    )
+    matches = [p for p in candidates if normalized_name(p.name) == target_key]
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+
+    # Ambiguous group: prefer the single member with a projection (canonical).
+    with_proj_ids = {
+        pid
+        for (pid,) in db.query(ProspectDraftProjection.prospect_id)
+        .filter(ProspectDraftProjection.year == year)
+        .filter(
+            ProspectDraftProjection.prospect_id.in_([p.id for p in matches])
+        )
+        .all()
+    }
+    with_proj = [p for p in matches if p.id in with_proj_ids]
+    if len(with_proj) == 1:
+        return with_proj[0]
+
+    # Still ambiguous (multiple projections, or none).  Refuse to guess.
+    names = ", ".join(sorted(p.name for p in matches))
+    raise ValueError(
+        f"prospects {names!s} all normalize to {target_key!r}; "
+        f"cannot unambiguously resolve {name!r}"
     )
 
 

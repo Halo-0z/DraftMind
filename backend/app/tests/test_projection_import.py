@@ -320,3 +320,130 @@ def test_consensus_import_removes_only_stale_demo_projection_rows(
     assert "Custom seed projection should stay." in remaining_notes
     assert "Manual projection should stay." in remaining_notes
     assert db_session.query(TeamPickProjection).count() == 0
+
+
+# ---------------------------------------------------------------------------
+# B0-J1: normalized-name duplicate guard in import_projection_board
+# ---------------------------------------------------------------------------
+
+
+def _make_prospect(
+    db: Session,
+    *,
+    name: str,
+    position: str = "PG",
+    upside: float = 80.0,
+) -> Prospect:
+    p = Prospect(
+        year=2026,
+        name=name,
+        position=position,
+        age=19.0,
+        height="6-4",
+        weight=190,
+        school_or_league="Test U",
+        ppg=14.0,
+        rpg=4.0,
+        apg=3.0,
+        fg_pct=45.0,
+        three_pct=35.0,
+        ft_pct=75.0,
+        stocks=1.5,
+        archetype="Versatile",
+        upside_score=upside,
+        risk_score=25.0,
+    )
+    db.add(p)
+    db.flush()
+    return p
+
+
+def test_find_prospect_resolves_suffixless_name_to_canonical_row(
+    db_session: Session,
+) -> None:
+    """A CSV row 'Darius Acuff' must resolve to the seeded canonical
+    'Darius Acuff Jr.' rather than returning None (and skipping the row) or
+    creating a duplicate."""
+    from scripts.import_projection_board import _find_prospect
+
+    canonical = _make_prospect(db_session, name="Darius Acuff Jr.")
+    db_session.commit()
+
+    resolved = _find_prospect(db_session, year=2026, name="Darius Acuff")
+    assert resolved is not None
+    assert resolved.id == canonical.id
+    assert resolved.name == "Darius Acuff Jr."
+
+
+def test_find_prospect_raises_on_ambiguous_duplicate_group(
+    db_session: Session,
+) -> None:
+    """If two real prospect rows normalize to the same key (a genuine
+    duplicate), _find_prospect must raise ValueError instead of silently
+    picking one -- the projection must never land on the wrong row."""
+    import pytest
+
+    from scripts.import_projection_board import _find_prospect
+
+    _make_prospect(db_session, name="Darius Acuff Jr.")
+    _make_prospect(db_session, name="Darius Acuff")
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="normalize"):
+        _find_prospect(db_session, year=2026, name="Darius Acuff")
+
+
+def test_import_prospect_projection_skips_ambiguous_duplicate_row(
+    db_session: Session, tmp_path: Path,
+) -> None:
+    """When a CSV row resolves to an ambiguous duplicate group, the importer
+    must record an explicit skip (not crash, not silently pick)."""
+    _make_prospect(db_session, name="Darius Acuff Jr.")
+    _make_prospect(db_session, name="Darius Acuff")
+    db_session.commit()
+
+    csv_path = _write_csv(
+        tmp_path / "ambiguous.csv",
+        "year,prospect_name,consensus_rank,big_board_rank,expected_pick,"
+        "draft_range_min,draft_range_max,tier,source,source_count,confidence,notes",
+        [
+            '2026,Darius Acuff,5,5,5,4,7,2,consensus_reference,2,0.74,"ambiguous"',
+        ],
+    )
+
+    summary = import_prospect_projection_csv(db_session, csv_path)
+    db_session.commit()
+
+    assert summary.created == 0
+    assert summary.updated == 0
+    assert summary.skipped == 1
+    assert any("ambiguous prospect" in err for err in (summary.errors or []))
+    # No projection was written.
+    assert db_session.query(ProspectDraftProjection).count() == 0
+
+
+def test_import_prospect_projection_writes_to_canonical_via_normalized_match(
+    db_session: Session, tmp_path: Path,
+) -> None:
+    """The happy path of the suffixless-name fix: a CSV 'Darius Acuff' row
+    lands its projection on the canonical 'Darius Acuff Jr.' prospect."""
+    canonical = _make_prospect(db_session, name="Darius Acuff Jr.")
+    db_session.commit()
+
+    csv_path = _write_csv(
+        tmp_path / "canonical.csv",
+        "year,prospect_name,consensus_rank,big_board_rank,expected_pick,"
+        "draft_range_min,draft_range_max,tier,source,source_count,confidence,notes",
+        [
+            '2026,Darius Acuff,5,5,5,4,7,2,consensus_reference,2,0.74,"via norm"',
+        ],
+    )
+
+    summary = import_prospect_projection_csv(db_session, csv_path)
+    db_session.commit()
+
+    assert summary.created == 1
+    assert summary.skipped == 0
+    proj = db_session.query(ProspectDraftProjection).one()
+    assert proj.prospect_id == canonical.id
+    assert proj.expected_pick == 5

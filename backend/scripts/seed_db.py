@@ -576,15 +576,57 @@ def _upsert_prospect(
     year: int,
     prospect_data: tuple[Any, ...],
 ) -> Prospect:
-    prospect = (
-        db.query(Prospect)
-        .filter_by(year=year, name=prospect_data[0])
-        .order_by(Prospect.id.asc())
-        .first()
-    )
+    name = prospect_data[0]
+    from app.utils.nameutils import normalized_name
+
+    target_key = normalized_name(name)
+    # Resolve every existing row that shares this normalized identity.  We
+    # intentionally do NOT short-circuit on an exact display-name match,
+    # because the whole point of B0-J1 is that a bare duplicate
+    # ("Darius Acuff") may already exist alongside the canonical
+    # ("Darius Acuff Jr.") and the seed must merge them, not leave both.
+    existing_group = [
+        p
+        for p in db.query(Prospect).filter_by(year=year).all()
+        if normalized_name(p.name) == target_key
+    ]
+
+    if not existing_group:
+        prospect = None
+    elif len(existing_group) == 1:
+        # Single match -- reclaim it whether or not its display name is
+        # exact.  This is what lets a seeded "Darius Acuff Jr." rename an
+        # existing bare "Darius Acuff" duplicate into the canonical row.
+        prospect = existing_group[0]
+    else:
+        # Multiple rows share the normalized key.  Prefer the one with a
+        # projection (canonical); if zero or several have projections,
+        # refuse to guess so the operator cleans up via the audit/cleanup
+        # scripts first.
+        proj_ids = {
+            row.prospect_id
+            for row in db.query(ProspectDraftProjection)
+            .filter_by(year=year)
+            .filter(
+                ProspectDraftProjection.prospect_id.in_(
+                    [p.id for p in existing_group]
+                )
+            )
+            .all()
+        }
+        with_proj = [p for p in existing_group if p.id in proj_ids]
+        if len(with_proj) == 1:
+            prospect = with_proj[0]
+        else:
+            dup_names = ", ".join(sorted(p.name for p in existing_group))
+            raise ValueError(
+                f"seed prospect {name!r} matches {len(existing_group)} existing rows "
+                f"({dup_names}); resolve the duplicate before re-seeding."
+            )
+
     values = {
         "year": year,
-        "name": prospect_data[0],
+        "name": name,
         "position": prospect_data[1],
         "age": prospect_data[2],
         "height": prospect_data[3],

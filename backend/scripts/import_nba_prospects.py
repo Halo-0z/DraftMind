@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 from app.database import Base, SessionLocal, engine
 from app.models import Prospect, ScoutingReport
+from app.utils.nameutils import normalized_name
 
 
 URL = "https://www.nba.com/draft/2026/prospects"
@@ -28,31 +29,62 @@ def main() -> None:
     with SessionLocal() as db:
         imported = 0
         updated = 0
+        # Cache the whole 2026 pool once so normalized-name lookups (which
+        # would otherwise scan per row) stay cheap.  This is what stops the
+        # NBA.com scrape from creating a duplicate when the site lists a
+        # player without a "Jr." suffix that the local seed has -- e.g.
+        # NBA.com "Darius Acuff" must resolve to the seeded
+        # "Darius Acuff Jr." instead of creating a second row.
+        all_prospects = list(
+            db.scalars(select(Prospect).where(Prospect.year == 2026))
+        )
+        exact_by_name = {p.name.lower(): p for p in all_prospects}
+        norm_index: dict[str, list[Prospect]] = {}
+        for p in all_prospects:
+            norm_index.setdefault(normalized_name(p.name), []).append(p)
+
         for board_index, row in enumerate(prospects, start=1):
             name = str(row.get("displayName") or "").strip()
             if not name:
                 continue
 
-            existing = db.scalar(
-                select(Prospect).where(
-                    Prospect.year == 2026,
-                    Prospect.name == name,
-                )
-            )
+            existing = exact_by_name.get(name.lower())
+            if existing is None:
+                # Fall back to normalized-name matching across the existing
+                # pool before deciding to create a new row.
+                norm_matches = norm_index.get(normalized_name(name), [])
+                if len(norm_matches) == 1:
+                    existing = norm_matches[0]
+                elif len(norm_matches) > 1:
+                    # Real duplicate already in the DB -- do not silently
+                    # pick one.  Skip with a loud message so the operator
+                    # can clean it up via the audit/cleanup scripts.
+                    dup_names = ", ".join(sorted(p.name for p in norm_matches))
+                    print(
+                        f"SKIP {name!r}: {len(norm_matches)} existing prospects "
+                        f"share normalized name ({dup_names}); resolve the "
+                        f"duplicate first."
+                    )
+                    continue
 
             if existing is None:
-                db.add(build_prospect(row=row, board_index=board_index))
+                prospect_obj = build_prospect(row=row, board_index=board_index)
+                db.add(prospect_obj)
                 db.flush()
+                # Keep the in-memory indexes consistent for later rows in
+                # the same run.
+                exact_by_name[prospect_obj.name.lower()] = prospect_obj
+                norm_index.setdefault(
+                    normalized_name(prospect_obj.name), []
+                ).append(prospect_obj)
                 imported += 1
+                prospect = prospect_obj
             else:
                 update_bio(existing, row)
                 updated += 1
+                prospect = existing
 
-            prospect = db.scalar(
-                select(Prospect).where(Prospect.year == 2026, Prospect.name == name)
-            )
-            if prospect is not None:
-                upsert_report(db, prospect, row)
+            upsert_report(db, prospect, row)
 
         db.commit()
         print(
