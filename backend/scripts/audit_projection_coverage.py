@@ -168,9 +168,21 @@ def build_report(
             for pick in resp.picks[:top_n]:
                 sp = pick.selected_player
                 if sp.prospect.id not in pids_with_proj:
+                    # B0-K1a: sp.prospect is a pydantic schema object that
+                    # does NOT carry stats_source / stats_confidence (those
+                    # are ORM-only fields).  Re-query the ORM Prospect by id
+                    # so the audit reports the real provenance the operator
+                    # sees in the high-upside section.  Fall back to the
+                    # schema object (-> "unknown") if the row is somehow gone.
+                    orm_prospect = db.get(Prospect, sp.prospect.id)
+                    brief = (
+                        _prospect_brief(orm_prospect)
+                        if orm_prospect is not None
+                        else _prospect_brief_obj(sp.prospect)
+                    )
                     report.selected_top_n_no_projection.append(
                         {
-                            **_prospect_brief_obj(sp.prospect),
+                            **brief,
                             "selected_pick": pick.pick,
                             "team_abbr": pick.team.abbr,
                             "final_score": sp.scores.final_score,
