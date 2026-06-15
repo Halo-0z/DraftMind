@@ -350,6 +350,47 @@ def _market_prior_availability(
     )
 
 
+def has_same_team_projection_priority(
+    *,
+    pick_no: int,
+    final_score: float,
+    original_top_final_score: float,
+    prospect_projection: Any | None,
+    team_projection: Any | None,
+) -> bool:
+    """Return whether a same-team TeamPickProjection earns priority.
+
+    This is the B0-K2b guardrail: the underlying B0-I availability gate still
+    owns all validation (trusted source, top-8 expected pick, confidence,
+    range/grace, and hard-reject).  This helper only narrows that result to
+    a real same-team projection match that is also eligible under the current
+    prediction-selection gap rules.
+    """
+    availability = _market_prior_availability(
+        pick_no=pick_no,
+        final_score=final_score,
+        original_top_final_score=original_top_final_score,
+        prospect_projection=prospect_projection,
+        team_projection=team_projection,
+    )
+    if not availability.active or not availability.team_match:
+        return False
+
+    strong_manual_signal = (
+        getattr(team_projection, "projection_type", None) == "manual_prediction"
+        and getattr(team_projection, "source", None) == "manual_projection"
+        and (_get_number(team_projection, "confidence") or 0.0) >= 0.85
+    )
+    base_max_gap = (
+        VERY_STRONG_MANUAL_FINAL_SCORE_GAP
+        if strong_manual_signal
+        else MAX_CALIBRATION_FINAL_SCORE_GAP
+    )
+    max_gap = max(base_max_gap, availability.relaxed_gap)
+    final_gap = original_top_final_score - final_score
+    return final_gap <= max_gap
+
+
 def calculate_prediction_calibration(
     *,
     pick_no: int,

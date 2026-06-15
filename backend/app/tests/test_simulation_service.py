@@ -27,6 +27,7 @@ from app.models.team import Team, TeamNeed
 from app.services.simulation_service import (
     _market_alignment_diagnostics,
     _market_alignment_label,
+    _prediction_selection_map_for_rankings,
     adjust_team_need_after_pick,
 )
 from app.services.team_need_adjustment import (
@@ -2954,11 +2955,13 @@ class TestMarketPriorAvailabilityGuardrail:
         client: TestClient,
         db_session: Session,
     ) -> None:
-        """The availability floor must lift the protected prospect's
-        prediction_sort_score close to the original top and surface the
-        protection note.  Without calibration his raw final_score would
-        leave him ~17 points behind the natural top; with calibration the
-        floor pins him at original_top - 0.5 (a near-tie from below)."""
+        """The same-team market signal must promote the protected prospect.
+
+        Without calibration his raw final_score stays well behind the natural
+        top.  With calibration, the B0-I availability floor makes him eligible
+        and the B0-K2b same-team priority lifts him above ordinary calibrated
+        candidates instead of leaving him as a near-tie loser.
+        """
         protected = self._seed_protected_top_market_prospect(db_session)
 
         # Without calibration, the prospect is buried by his raw score.
@@ -2970,21 +2973,30 @@ class TestMarketPriorAvailabilityGuardrail:
         )
         assert baseline_protected["scores"]["final_score"] < 70.0  # well below top
 
-        # With calibration: the floor lifts him to a near-tie with the top.
+        # With calibration: same-team priority lets the protected candidate win.
         pick = _base_projection_response(client, calibration=True)
+        assert pick["selected_player"]["prospect"]["id"] == protected.id
+
         protected_candidate = next(
             c for c in pick["candidate_board"]
             if c["prospect"]["id"] == protected.id
         )
-        # Floor = original_top final - 0.5.  Mikel's #2 final_score is ~74.8,
-        # so the floor is ~74.3.
-        top_final = pick["candidate_board"][0]["scores"]["final_score"]
-        assert protected_candidate["prediction_sort_score"] == pytest.approx(
-            top_final - 0.5, abs=0.01
+        mikel_candidate = next(
+            c for c in pick["candidate_board"]
+            if c["prospect"]["name"] == "Mikel Brown Jr."
         )
-        assert protected_candidate["prediction_selection_rank"] == 2
+        assert protected_candidate["prediction_sort_score"] > (
+            mikel_candidate["prediction_sort_score"]
+            or mikel_candidate["scores"]["final_score"]
+        )
+        assert protected_candidate["prediction_selection_rank"] == 1
+        assert protected_candidate["prediction_selection_applied"] is True
         assert any(
             "availability protection" in note.lower()
+            for note in protected_candidate.get("prediction_selection_notes") or []
+        )
+        assert any(
+            "same-team teampickprojection priority applied" in note.lower()
             for note in protected_candidate.get("prediction_selection_notes") or []
         )
 
@@ -3025,6 +3037,115 @@ class TestMarketPriorAvailabilityGuardrail:
         # And the note must NOT claim a matching team signal at this pick.
         assert all(
             "matching team projection signal" not in note for note in notes
+        )
+
+    def test_team_projection_priority_does_not_trigger_after_player_selected(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        """A later TeamPickProjection for a player already selected must not
+        pull that player back onto the board."""
+        mikel = _prospect_by_name(db_session, "Mikel Brown Jr.")
+        rockets = _team_by_abbr(db_session, "HOU")
+        db_session.add_all(
+            [
+                ProspectDraftProjection(
+                    prospect_id=mikel.id,
+                    year=2026,
+                    expected_pick=5,
+                    draft_range_min=4,
+                    draft_range_max=7,
+                    tier=2,
+                    source="consensus_reference",
+                    confidence=0.90,
+                    notes="Later same-team projection for an already picked player.",
+                ),
+                TeamPickProjection(
+                    year=2026,
+                    pick_no=5,
+                    team_id=rockets.id,
+                    prospect_id=mikel.id,
+                    projection_type="consensus_mock",
+                    source="consensus_reference",
+                    confidence=0.90,
+                    notes="Should be ignored once Mikel is selected at pick #2.",
+                ),
+            ]
+        )
+        db_session.commit()
+
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 1,
+                "limit": 2,
+                "include_projection_diagnostics": True,
+                "include_prediction_shadow": True,
+                "use_prediction_calibration": True,
+            },
+        )
+
+        assert response.status_code == 200
+        picks = response.json()["picks"]
+        assert picks[0]["selected_player"]["prospect"]["name"] == "Mikel Brown Jr."
+        assert picks[1]["pick"] == 5
+        assert picks[1]["selected_player"]["prospect"]["name"] != "Mikel Brown Jr."
+        assert all(
+            candidate["prospect"]["name"] != "Mikel Brown Jr."
+            for candidate in picks[1]["candidate_board"]
+        )
+
+    def test_team_projection_priority_floor_ignores_ineligible_ordinary_candidate(
+        self,
+    ) -> None:
+        """Priority floor should clear ordinary eligible candidates only.
+
+        A hard-rejected / ineligible ordinary candidate may still have a
+        diagnostic sort score, but it must not raise the same-team priority
+        floor.
+        """
+        priority = SimpleNamespace(prospect=SimpleNamespace(id=1), final_score=55.0)
+        eligible_ordinary = SimpleNamespace(
+            prospect=SimpleNamespace(id=2),
+            final_score=70.0,
+        )
+        ineligible_ordinary = SimpleNamespace(
+            prospect=SimpleNamespace(id=3),
+            final_score=65.0,
+        )
+
+        def fake_sort_score(*, ranking, **_kwargs):
+            if ranking.prospect.id == 1:
+                return 50.0, True, ["priority base"]
+            if ranking.prospect.id == 2:
+                return 60.0, True, ["eligible ordinary"]
+            return 65.0, False, ["ineligible ordinary"]
+
+        with (
+            patch(
+                "app.services.simulation_service.calculate_prediction_sort_score",
+                side_effect=fake_sort_score,
+            ),
+            patch(
+                "app.services.simulation_service.has_same_team_projection_priority",
+                return_value=True,
+            ),
+        ):
+            selection = _prediction_selection_map_for_rankings(
+                [priority, eligible_ordinary, ineligible_ordinary],
+                pick_no=5,
+                prospect_projection_map={1: SimpleNamespace()},
+                team_projection_map={1: SimpleNamespace()},
+            )
+
+        protected = selection[1]
+        assert protected.sort_score == pytest.approx(60.01)
+        assert protected.sort_score < 65.0
+        assert any(
+            "same-team teampickprojection priority applied" in note.lower()
+            for note in protected.notes
         )
 
     def test_high_market_prior_floor_off_when_calibration_disabled(

@@ -25,6 +25,7 @@ from app.services.prediction_calibration import (
     PredictionSelectionResult,
     calculate_prediction_calibration,
     calculate_prediction_sort_score,
+    has_same_team_projection_priority,
 )
 from app.services.team_need_adjustment import (
     TeamNeedSnapshot,
@@ -45,6 +46,10 @@ TEAM_PROJECTION_TYPE_PRIORITY = {
     "workout_signal": 2,
     "consensus_mock": 3,
 }
+SAME_TEAM_PROJECTION_PRIORITY_EPSILON = 0.01
+SAME_TEAM_PROJECTION_PRIORITY_NOTE = (
+    "Same-team TeamPickProjection priority applied."
+)
 
 
 @dataclass(frozen=True)
@@ -519,6 +524,47 @@ def _prediction_selection_map_for_rankings(
             original_top_final_score=original_top_final_score,
         )
         scored.append((prospect_id, sort_score, notes, eligible, ranking.final_score))
+
+    priority_ids: set[int] = set()
+    if team_projection_map:
+        for prospect_id, sort_score, notes, eligible, final_score in scored:
+            if not eligible or prospect_id not in team_projection_map:
+                continue
+            if has_same_team_projection_priority(
+                pick_no=pick_no,
+                final_score=final_score,
+                original_top_final_score=original_top_final_score,
+                prospect_projection=(
+                    prospect_projection_map.get(prospect_id)
+                    if prospect_projection_map else None
+                ),
+                team_projection=team_projection_map.get(prospect_id),
+            ):
+                priority_ids.add(prospect_id)
+
+    if priority_ids:
+        ordinary_top_sort_score = max(
+            (
+                sort_score
+                for prospect_id, sort_score, _notes, eligible, _final_score in scored
+                if eligible and prospect_id not in priority_ids
+            ),
+            default=None,
+        )
+        if ordinary_top_sort_score is not None:
+            priority_floor = (
+                ordinary_top_sort_score + SAME_TEAM_PROJECTION_PRIORITY_EPSILON
+            )
+            adjusted: list[tuple[int, float, list[str], bool, float]] = []
+            for prospect_id, sort_score, notes, eligible, final_score in scored:
+                if prospect_id in priority_ids:
+                    notes = [*notes, SAME_TEAM_PROJECTION_PRIORITY_NOTE]
+                    if sort_score < priority_floor:
+                        sort_score = round(priority_floor, 2)
+                adjusted.append(
+                    (prospect_id, sort_score, notes, eligible, final_score)
+                )
+            scored = adjusted
 
     selection_positions: dict[int, int] = {}
     for selection_rank, (prospect_id, _sort_score, _notes, _eligible, _final_score) in enumerate(

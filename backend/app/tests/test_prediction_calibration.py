@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from app.services.prediction_calibration import (
     calculate_prediction_calibration,
     calculate_prediction_sort_score,
+    has_same_team_projection_priority,
     team_projection_type_score,
 )
 
@@ -249,6 +250,34 @@ def test_availability_guardrail_triggers_for_in_range_top_market_prior() -> None
     assert sort_score == 66.6
     assert any("availability protection" in note.lower() for note in notes)
     assert any("matching team projection signal" in note for note in notes)
+
+
+def test_same_team_projection_priority_eligible_for_keaton_shape() -> None:
+    assert has_same_team_projection_priority(
+        pick_no=5,
+        final_score=55.4,
+        prospect_projection=_market_prior_projection(),
+        team_projection=SimpleNamespace(
+            projection_type="consensus_mock",
+            source="consensus_reference",
+            confidence=0.62,
+        ),
+        original_top_final_score=67.1,
+    )
+
+
+def test_same_team_projection_priority_respects_hard_reject() -> None:
+    assert not has_same_team_projection_priority(
+        pick_no=5,
+        final_score=45.0,
+        prospect_projection=_market_prior_projection(),
+        team_projection=SimpleNamespace(
+            projection_type="consensus_mock",
+            source="consensus_reference",
+            confidence=0.62,
+        ),
+        original_top_final_score=67.1,
+    )
 
 
 def test_availability_guardrail_floor_raises_score_above_plain_adjustment() -> None:
