@@ -65,6 +65,15 @@ class EvidenceCitation(BaseModel):
     date: str | None = None
     excerpt: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
+    evidence_source_type: str | None = None
+    entity_type: str | None = None
+    entity_id: int | str | None = None
+    publisher: str | None = None
+    author: str | None = None
+    retrieved_at: str | None = None
+    freshness_days: int | None = Field(default=None, ge=0)
+    relevance_reason: str | None = None
+    evidence_only: Literal[True] = True
 
 
 class PickEvidencePackage(BaseModel):

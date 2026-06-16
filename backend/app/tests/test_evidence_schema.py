@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from app.schemas.evidence import (
     ConflictEvidence,
     EvidenceCitation,
@@ -146,3 +149,67 @@ def test_schema_does_not_expose_reranking_or_replacement_fields() -> None:
     }
 
     assert forbidden_fields.isdisjoint(PickEvidencePackage.model_fields)
+
+
+def test_evidence_citation_carries_source_metadata() -> None:
+    citation = EvidenceCitation(
+        source_type="news_article",
+        source_id="news:42",
+        title="Workout report",
+        url="https://example.test/workout",
+        date="2026-06-16",
+        excerpt="Team officials attended the workout.",
+        confidence=0.82,
+        evidence_source_type="news",
+        entity_type="prospect",
+        entity_id=101,
+        publisher="Example Sports",
+        author="Analyst Name",
+        retrieved_at="2026-06-16T12:00:00Z",
+        freshness_days=1,
+        relevance_reason="Mentions selected player by name.",
+    )
+
+    dumped = citation.model_dump()
+
+    assert dumped["evidence_source_type"] == "news"
+    assert dumped["entity_type"] == "prospect"
+    assert dumped["entity_id"] == 101
+    assert dumped["publisher"] == "Example Sports"
+    assert dumped["author"] == "Analyst Name"
+    assert dumped["freshness_days"] == 1
+    assert dumped["relevance_reason"] == "Mentions selected player by name."
+    assert dumped["evidence_only"] is True
+
+
+def test_evidence_citation_evidence_only_defaults_to_true() -> None:
+    citation = EvidenceCitation(source_type="manual_note")
+
+    assert citation.evidence_only is True
+
+
+def test_evidence_citation_rejects_negative_freshness_days() -> None:
+    with pytest.raises(ValidationError):
+        EvidenceCitation(source_type="news_article", freshness_days=-1)
+
+
+def test_evidence_citation_rejects_confidence_outside_zero_to_one() -> None:
+    with pytest.raises(ValidationError):
+        EvidenceCitation(source_type="news_article", confidence=1.01)
+
+    with pytest.raises(ValidationError):
+        EvidenceCitation(source_type="news_article", confidence=-0.01)
+
+
+def test_evidence_citation_does_not_expose_scoring_or_replacement_fields() -> None:
+    forbidden_fields = {
+        "recommended_player",
+        "replacement_player",
+        "new_selected_player",
+        "rerank_score",
+        "new_score",
+        "score_adjustment",
+        "ranking_weight",
+    }
+
+    assert forbidden_fields.isdisjoint(EvidenceCitation.model_fields)
