@@ -24,7 +24,11 @@ from app.models.projection import ProspectDraftProjection, TeamPickProjection
 from app.models.prospect import Prospect
 from app.models.scouting import ProspectScoutingProfile, TeamNeedProfile
 from app.models.team import Team, TeamNeed
+from app.schemas.simulation import SimulateResponse
 from app.services.simulation_service import (
+    LOW_CONFIDENCE_STATS_WARNING,
+    MARKET_SLIP_WARNING,
+    NO_MARKET_HEURISTIC_WARNING,
     _market_alignment_diagnostics,
     _market_alignment_label,
     _prediction_selection_map_for_rankings,
@@ -1954,6 +1958,192 @@ def _prospect_by_name(db_session: Session, name: str) -> Prospect:
 
 def _team_by_abbr(db_session: Session, abbr: str) -> Team:
     return db_session.query(Team).filter(Team.abbr == abbr).one()
+
+
+class TestDiagnosticsWarnings:
+    def test_market_top30_missing_warnings_default_list_is_not_shared(
+        self,
+    ) -> None:
+        first = SimulateResponse(year=2026, rounds=1, total_picks=0, picks=[])
+        second = SimulateResponse(year=2026, rounds=1, total_picks=0, picks=[])
+
+        first.market_top30_missing_warnings.append("shared-state guard")
+
+        assert first.market_top30_missing_warnings == ["shared-state guard"]
+        assert second.market_top30_missing_warnings == []
+
+    @staticmethod
+    def _add_mock_prospect(
+        db_session: Session,
+        *,
+        name: str,
+        stats_source: str = "seed_manual",
+        stats_confidence: float = 0.85,
+        upside_score: float = 40.0,
+        risk_score: float = 65.0,
+    ) -> Prospect:
+        prospect = Prospect(
+            year=2026,
+            name=name,
+            position="SG",
+            age=20.0,
+            height="6-5",
+            weight=190,
+            school_or_league="Mock",
+            ppg=8.0,
+            rpg=2.0,
+            apg=1.5,
+            fg_pct=40.0,
+            three_pct=31.0,
+            ft_pct=70.0,
+            stocks=0.5,
+            archetype="Diagnostic test prospect",
+            upside_score=upside_score,
+            risk_score=risk_score,
+            stats_source=stats_source,
+            stats_confidence=stats_confidence,
+        )
+        db_session.add(prospect)
+        db_session.commit()
+        return prospect
+
+    @staticmethod
+    def _simulate_locked_pick_10(client: TestClient, prospect: Prospect) -> dict:
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 1,
+                "limit": 3,
+                "include_projection_diagnostics": True,
+                "include_prediction_shadow": True,
+                "use_prediction_calibration": True,
+                "locked_picks": [
+                    {"pick_no": 10, "prospect_id": prospect.id},
+                ],
+            },
+        )
+        assert response.status_code == 200
+        return next(pick for pick in response.json()["picks"] if pick["pick"] == 10)
+
+    def test_market_slip_warning_for_top30_late_selected_player(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        prospect = self._add_mock_prospect(
+            db_session,
+            name="Late Market Slip Guard",
+        )
+        db_session.add(
+            ProspectDraftProjection(
+                prospect_id=prospect.id,
+                year=2026,
+                expected_pick=2,
+                draft_range_min=1,
+                draft_range_max=4,
+                tier=3,
+                source="consensus_reference",
+                confidence=0.80,
+                notes="Diagnostic market slip fixture.",
+            )
+        )
+        db_session.commit()
+
+        pick = self._simulate_locked_pick_10(client, prospect)
+
+        selected = pick["selected_player"]
+        assert selected["prospect"]["name"] == "Late Market Slip Guard"
+        assert selected["market_pick_delta"] == 8
+        assert MARKET_SLIP_WARNING in selected["diagnostics_warnings"]
+
+    def test_no_market_heuristic_and_low_confidence_stats_warnings(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        prospect = self._add_mock_prospect(
+            db_session,
+            name="No Market Heuristic Guard",
+            stats_source="nba_importer_heuristic",
+            stats_confidence=0.30,
+        )
+
+        pick = self._simulate_locked_pick_10(client, prospect)
+
+        selected = pick["selected_player"]
+        assert selected["market_expected_pick"] is None
+        assert NO_MARKET_HEURISTIC_WARNING in selected["diagnostics_warnings"]
+        assert LOW_CONFIDENCE_STATS_WARNING in selected["diagnostics_warnings"]
+
+    def test_market_top30_missing_warning_surfaces_on_simulation_response(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        prospect = self._add_mock_prospect(
+            db_session,
+            name="Missing Market Top Thirty",
+        )
+        db_session.add(
+            ProspectDraftProjection(
+                prospect_id=prospect.id,
+                year=2026,
+                expected_pick=12,
+                draft_range_min=10,
+                draft_range_max=14,
+                tier=3,
+                source="consensus_reference",
+                confidence=0.80,
+                notes="Diagnostic missing top-30 fixture.",
+            )
+        )
+        db_session.commit()
+
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 1,
+                "limit": 2,
+                "include_projection_diagnostics": True,
+                "include_prediction_shadow": True,
+                "use_prediction_calibration": True,
+            },
+        )
+
+        assert response.status_code == 200
+        warnings = response.json()["market_top30_missing_warnings"]
+        assert any("Missing Market Top Thirty expected #12" in w for w in warnings)
+
+    def test_diagnostic_warnings_do_not_change_selection_or_scores(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        prospect = self._add_mock_prospect(
+            db_session,
+            name="Diagnostics Invariant Guard",
+            stats_source="nba_importer_heuristic",
+            stats_confidence=0.30,
+        )
+
+        with patch(
+            "app.services.simulation_service._diagnostic_warnings",
+            return_value=None,
+        ):
+            baseline = self._simulate_locked_pick_10(client, prospect)
+        with_warnings = self._simulate_locked_pick_10(client, prospect)
+
+        baseline_selected = baseline["selected_player"]
+        warned_selected = with_warnings["selected_player"]
+        assert warned_selected["diagnostics_warnings"]
+        assert warned_selected["prospect"]["id"] == baseline_selected["prospect"]["id"]
+        assert warned_selected["scores"] == baseline_selected["scores"]
+        assert (
+            warned_selected["prediction_sort_score"]
+            == baseline_selected["prediction_sort_score"]
+        )
 
 
 class TestProjectionDiagnostics:

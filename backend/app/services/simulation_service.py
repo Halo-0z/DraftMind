@@ -50,6 +50,15 @@ SAME_TEAM_PROJECTION_PRIORITY_EPSILON = 0.01
 SAME_TEAM_PROJECTION_PRIORITY_NOTE = (
     "Same-team TeamPickProjection priority applied."
 )
+MARKET_SLIP_WARNING = (
+    "Market slip warning: selected 8+ picks later than expected market range."
+)
+NO_MARKET_HEURISTIC_WARNING = (
+    "No market reference with heuristic stats; selection carries elevated data-risk."
+)
+LOW_CONFIDENCE_STATS_WARNING = (
+    "Low-confidence imported stats used in ranking context."
+)
 
 
 @dataclass(frozen=True)
@@ -60,6 +69,44 @@ class ProjectionDiagnostics:
     prediction_shadow_rank: int | None = None
     prediction_shadow_delta: int | None = None
     prediction_selection: PredictionSelectionResult | None = None
+
+
+def _diagnostic_warnings(
+    *,
+    prospect: Prospect,
+    prospect_projection: ProspectDraftProjection | None,
+    selected_pick_no: int | None,
+) -> list[str] | None:
+    if selected_pick_no is None:
+        return None
+
+    warnings: list[str] = []
+    expected_pick = (
+        prospect_projection.expected_pick if prospect_projection else None
+    )
+    if (
+        expected_pick is not None
+        and expected_pick <= 30
+        and selected_pick_no - expected_pick >= 8
+    ):
+        warnings.append(MARKET_SLIP_WARNING)
+
+    stats_source = getattr(prospect, "stats_source", None)
+    stats_confidence = getattr(prospect, "stats_confidence", None)
+    if (
+        expected_pick is None
+        and stats_source == "nba_importer_heuristic"
+        and selected_pick_no <= 40
+    ):
+        warnings.append(NO_MARKET_HEURISTIC_WARNING)
+    if (
+        stats_confidence is not None
+        and stats_confidence <= 0.30
+        and selected_pick_no <= 40
+    ):
+        warnings.append(LOW_CONFIDENCE_STATS_WARNING)
+
+    return warnings or None
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +241,11 @@ def _to_ranked_read(
         market_pick_delta=market_alignment["market_pick_delta"],
         market_alignment_label=market_alignment["market_alignment_label"],
         market_alignment_notes=market_alignment["market_alignment_notes"],
+        diagnostics_warnings=_diagnostic_warnings(
+            prospect=ranking.prospect,
+            prospect_projection=prospect_projection,
+            selected_pick_no=selected_pick_no,
+        ),
         candidate_source=candidate_source,
     )
 
@@ -272,6 +324,45 @@ def _market_alignment_diagnostics(
         "market_alignment_label": label,
         "market_alignment_notes": [note],
     }
+
+
+def _market_top30_missing_warnings(
+    db: Session,
+    *,
+    year: int,
+    selected_prospect_ids: set[int],
+    enabled: bool,
+) -> list[str]:
+    if not enabled:
+        return []
+
+    projections = list(
+        db.scalars(
+            select(ProspectDraftProjection).where(
+                ProspectDraftProjection.year == year,
+                ProspectDraftProjection.expected_pick <= 30,
+            )
+        )
+    )
+    warnings: list[str] = []
+    for projection in sorted(
+        projections,
+        key=lambda item: (
+            item.expected_pick if item.expected_pick is not None else 999,
+            item.prospect_id,
+        ),
+    ):
+        if projection.prospect_id in selected_prospect_ids:
+            continue
+        prospect = db.get(Prospect, projection.prospect_id)
+        if prospect is None:
+            continue
+        warnings.append(
+            "Market top-30 missing warning: "
+            f"{prospect.name} expected #{projection.expected_pick} "
+            "was not selected in this simulation."
+        )
+    return warnings
 
 
 def _load_team_need_profile(
@@ -868,6 +959,11 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
         request.include_scouting_diagnostics
         or request.use_scouting_tiebreaker
     )
+    include_projection_context_for_response = (
+        request.include_projection_diagnostics
+        or request.include_prediction_shadow
+        or request.use_prediction_calibration
+    )
 
     # Market context (Phase 5B-M1): read cached news once per simulation
     # and pass it to decision_log. This MUST NOT touch selected_player,
@@ -1170,6 +1266,12 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
         total_picks=len(picks),
         source=draft_order[0].source if draft_order else None,
         picks=picks,
+        market_top30_missing_warnings=_market_top30_missing_warnings(
+            db,
+            year=request.year,
+            selected_prospect_ids=selected_prospect_ids,
+            enabled=include_projection_context_for_response,
+        ),
     )
 
 

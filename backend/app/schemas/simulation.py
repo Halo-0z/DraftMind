@@ -56,3 +56,4 @@ class SimulateResponse(BaseModel):
     total_picks: int
     source: str | None = None
     picks: list[SimulatedPickRead]
+    market_top30_missing_warnings: list[str] = Field(default_factory=list)

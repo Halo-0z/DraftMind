@@ -62,6 +62,7 @@ class RankedProspectRead(BaseModel):
     market_pick_delta: int | None = None
     market_alignment_label: str | None = None
     market_alignment_notes: list[str] | None = None
+    diagnostics_warnings: list[str] | None = None
     candidate_source: str | None = None
 
 
