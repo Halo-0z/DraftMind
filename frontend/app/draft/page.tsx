@@ -247,6 +247,10 @@ function candidateSourceLabel(source: string | null | undefined): string | null 
   return CANDIDATE_SOURCE_LABELS[source] ?? source.replaceAll("_", " ");
 }
 
+function diagnosticsWarnings(player: RankedProspect): string[] {
+  return player.diagnostics_warnings ?? [];
+}
+
 export default function DraftPage() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [teamId, setTeamId] = useState<number | null>(null);
@@ -1857,6 +1861,51 @@ function ProjectionPredictionDiagnostics({
   );
 }
 
+function RiskDiagnosticsWarnings({
+  warnings,
+  compact = false,
+}: {
+  warnings: string[];
+  compact?: boolean;
+}) {
+  if (warnings.length === 0) {
+    return null;
+  }
+
+  if (compact) {
+    return (
+      <div className="mt-2 grid gap-1">
+        {warnings.map((warning, index) => (
+          <p
+            className="rounded-md border border-amber-300/30 bg-amber-300/[0.07] px-2 py-1 text-[11px] font-bold leading-5 text-amber-100"
+            key={`${warning}-${index}`}
+          >
+            风险：{warning}
+          </p>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-4 rounded-md border border-amber-300/30 bg-amber-300/[0.07] p-3">
+      <p className="text-[11px] font-black uppercase tracking-[0.16em] text-amber-200">
+        风险提示
+      </p>
+      <ul className="mt-2 grid gap-1.5 text-xs font-bold leading-5 text-amber-100">
+        {warnings.map((warning, index) => (
+          <li className="flex gap-2" key={`${warning}-${index}`}>
+            <span aria-hidden="true" className="text-amber-300">
+              -
+            </span>
+            <span>{warning}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function CandidateBoardPreview({
   candidates,
 }: {
@@ -1892,6 +1941,10 @@ function CandidateBoardPreview({
             </div>
             <ScoutingDiagnostics compact player={candidate} />
             <ProjectionPredictionDiagnostics compact player={candidate} />
+            <RiskDiagnosticsWarnings
+              compact
+              warnings={diagnosticsWarnings(candidate)}
+            />
           </div>
           );
         })}
@@ -1901,6 +1954,8 @@ function CandidateBoardPreview({
 }
 
 function SimulationBoard({ simulation }: { simulation: Simulation }) {
+  const missingWarnings = simulation.market_top30_missing_warnings ?? [];
+
   return (
     <section className="rounded-md border border-white/10 bg-court-panel p-5">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -1917,6 +1972,24 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
       <p className="mt-3 text-sm leading-6 text-court-muted">
         {simulation.source ?? "Draft order source unavailable"} · 每一签都会重新计算实时可选候选池，并记录交易评估。
       </p>
+
+      {missingWarnings.length > 0 ? (
+        <div className="mt-5 rounded-md border border-amber-300/30 bg-amber-300/[0.07] p-4">
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-amber-200">
+            市场 Top-30 未选中提示
+          </p>
+          <ul className="mt-3 grid gap-1.5 text-sm font-bold leading-6 text-amber-100">
+            {missingWarnings.map((warning, index) => (
+              <li className="flex gap-2" key={`${warning}-${index}`}>
+                <span aria-hidden="true" className="text-amber-300">
+                  -
+                </span>
+                <span>{warning}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <div className="mt-5 overflow-hidden rounded-md border border-white/10">
         <div className="grid grid-cols-[64px_82px_1fr_72px] bg-white/[0.04] px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-court-muted">
@@ -1964,6 +2037,9 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                 <div className="mt-2 sm:ml-[146px]">
                   <ScoutingDiagnostics player={pick.selected_player} />
                   <ProjectionPredictionDiagnostics player={pick.selected_player} />
+                  <RiskDiagnosticsWarnings
+                    warnings={diagnosticsWarnings(pick.selected_player)}
+                  />
                 </div>
                 <details className="mt-3 rounded-md border border-white/10 bg-court-black/60 px-3 py-2">
                   <summary className="cursor-pointer text-xs font-black uppercase tracking-[0.12em] text-court-line">

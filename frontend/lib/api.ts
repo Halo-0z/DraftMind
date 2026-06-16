@@ -138,6 +138,7 @@ export type RankedProspect = {
   market_pick_delta?: number | null;
   market_alignment_label?: string | null;
   market_alignment_notes?: string[] | null;
+  diagnostics_warnings?: string[] | null;
   candidate_source?: string | null;
 };
 
@@ -180,6 +181,7 @@ export type Simulation = {
   total_picks: number;
   source: string | null;
   picks: SimulatedPick[];
+  market_top30_missing_warnings?: string[];
 };
 
 export type SimulatePayload = {
