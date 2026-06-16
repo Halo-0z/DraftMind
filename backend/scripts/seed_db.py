@@ -149,8 +149,9 @@ TEAM_NEED_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "scheme_tags": "wembanyama-spacing,guard-creation,secondary-playmaking",
         "need_confidence": 0.64,
         "manual_override_reason": (
-            "Demo profile: young retooling core needs guard creation, spacing, "
-            "and NBA-ready perimeter decision making around Wembanyama."
+            "Demo, synthetic, non-official profile: young retooling core needs "
+            "guard creation, spacing, and NBA-ready perimeter decision making "
+            "around Wembanyama."
         ),
     },
     "HOU": {
@@ -178,8 +179,8 @@ TEAM_NEED_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "scheme_tags": "wing-size,shooting-volume,switch-defense",
         "need_confidence": 0.63,
         "manual_override_reason": (
-            "Demo profile: athletic core benefits from more wing size, "
-            "shooting volume, and switchable defensive depth."
+            "Demo, synthetic, non-official profile: athletic core benefits from "
+            "more wing size, shooting volume, and switchable defensive depth."
         ),
     },
     "WAS": {
@@ -212,8 +213,8 @@ TEAM_NEED_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "scheme_tags": "rebuild-upside,two-way-size,creation-bet",
         "need_confidence": 0.62,
         "manual_override_reason": (
-            "Demo profile: rebuilding roster should prioritize upside, "
-            "two-way size, creation, and defensive infrastructure."
+            "Demo, synthetic, non-official profile: rebuilding roster should "
+            "prioritize upside, two-way size, creation, and defensive infrastructure."
         ),
     },
     "DET": {
@@ -243,8 +244,8 @@ TEAM_NEED_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "scheme_tags": "shooting-volume,cade-spacing,wing-depth",
         "need_confidence": 0.66,
         "manual_override_reason": (
-            "Demo profile: young retooling team needs shooting volume, "
-            "spacing around Cade, and reliable wing depth."
+            "Demo, synthetic, non-official profile: young retooling team needs "
+            "shooting volume, spacing around Cade, and reliable wing depth."
         ),
     },
     "POR": {
@@ -277,8 +278,8 @@ TEAM_NEED_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "scheme_tags": "frontcourt-defense,wing-size,rebounding",
         "need_confidence": 0.61,
         "manual_override_reason": (
-            "Demo profile: rebuilding roster needs bigger two-way forwards, "
-            "frontcourt defense, and rebounding support."
+            "Demo, synthetic, non-official profile: rebuilding roster needs "
+            "bigger two-way forwards, frontcourt defense, and rebounding support."
         ),
     },
 }
@@ -316,8 +317,8 @@ LAL_TEAM_NEED_PROFILE: dict[str, Any] = {
     "horizon": "next_season",
     "need_confidence": 0.65,
     "manual_override_reason": (
-        "Demo profile: contender needing frontcourt defense, rebounding, "
-        "spacing, and NBA-ready contributors."
+        "Demo, synthetic, non-official profile: contender needing frontcourt "
+        "defense, rebounding, spacing, and NBA-ready contributors."
     ),
 }
 
@@ -837,7 +838,9 @@ def _build_seed_team_need_profile(abbr: str, needs: dict[str, int]) -> dict[str,
         "source": "seed",
         "horizon": "next_season",
         "need_confidence": 0.6,
-        "manual_override_reason": "Demo profile expanded from seeded TeamNeed values.",
+        "manual_override_reason": (
+            "Demo, synthetic, non-official profile expanded from seeded TeamNeed values."
+        ),
     }
     base.update(TEAM_NEED_PROFILE_OVERRIDES[abbr])
     return base
@@ -876,7 +879,10 @@ def _build_seed_scouting_profile_data(prospect: Prospect) -> dict[str, Any]:
         "scheme_fit_tags": _seed_scheme_tags(prospect, archetype),
         "source": "seed",
         "profile_confidence": 0.58,
-        "manual_override_reason": "Demo scouting profile seeded from board role, size, and box-score proxies.",
+        "manual_override_reason": (
+            "Demo, synthetic, non-official scouting profile seeded from board "
+            "role, size, and box-score proxies."
+        ),
     }
 
     data.update(_prospect_profile_overrides().get(prospect.name, {}))

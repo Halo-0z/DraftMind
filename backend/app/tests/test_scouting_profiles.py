@@ -155,6 +155,9 @@ def test_seed_demo_data_creates_realistic_profiles_and_is_idempotent(
     assert was.horizon == "next_season"
     assert was.need_confidence == 0.62
     assert was.need_upside > was.need_nba_ready
+    assert "Demo" in was.manual_override_reason
+    assert "synthetic" in was.manual_override_reason
+    assert "non-official" in was.manual_override_reason
 
     pistons = (
         db_session.query(TeamNeedProfile)
@@ -187,6 +190,51 @@ def test_seed_demo_data_creates_realistic_profiles_and_is_idempotent(
     assert braylon.spacing_value >= 8
     assert braylon.point_of_attack_defense <= 5
     assert "movement-shooting" in braylon.scheme_fit_tags
+    assert "Demo" in braylon.manual_override_reason
+    assert "synthetic" in braylon.manual_override_reason
+    assert "non-official" in braylon.manual_override_reason
+
+
+def test_seed_demo_data_adds_lal_profile_only_when_team_exists(
+    db_session: Session,
+) -> None:
+    seed_demo_data(db_session)
+    assert db_session.query(Team).filter_by(abbr="LAL").first() is None
+    assert (
+        db_session.query(TeamNeedProfile)
+        .join(Team)
+        .filter(Team.abbr == "LAL")
+        .count()
+        == 0
+    )
+
+    db_session.add(
+        Team(
+            name="Los Angeles Lakers",
+            abbr="LAL",
+            nba_team_id=1610612747,
+            city="Los Angeles",
+            conference="West",
+            division="Pacific",
+        )
+    )
+    db_session.commit()
+
+    seed_demo_data(db_session)
+    seed_demo_data(db_session)
+
+    lal_profile = (
+        db_session.query(TeamNeedProfile)
+        .join(Team)
+        .filter(Team.abbr == "LAL", TeamNeedProfile.year == 2026)
+        .one()
+    )
+    assert lal_profile.source == "seed"
+    assert lal_profile.horizon == "next_season"
+    assert lal_profile.need_center == 9
+    assert "Demo" in lal_profile.manual_override_reason
+    assert "synthetic" in lal_profile.manual_override_reason
+    assert "non-official" in lal_profile.manual_override_reason
 
 
 def test_seed_demo_data_does_not_delete_existing_rows(db_session: Session) -> None:
