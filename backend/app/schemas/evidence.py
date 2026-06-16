@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.simulation import SimulateResponse, SimulatedPickRead
+
 
 class RankingEvidence(BaseModel):
     final_score: float | None = None
@@ -82,3 +84,8 @@ class PickEvidencePackage(BaseModel):
     evidence_sufficiency: EvidenceSufficiency
     citations: list[EvidenceCitation] = Field(default_factory=list)
     narrative_explanation: str | None = None
+
+
+class PickEvidenceRequest(BaseModel):
+    simulation: SimulateResponse
+    pick: SimulatedPickRead
