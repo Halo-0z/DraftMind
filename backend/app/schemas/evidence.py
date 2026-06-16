@@ -76,6 +76,28 @@ class EvidenceCitation(BaseModel):
     evidence_only: Literal[True] = True
 
 
+class RetrievedEvidence(BaseModel):
+    source_type: str
+    source_id: str | None = None
+    citation: EvidenceCitation | None = None
+
+    entity_type: str | None = None
+    entity_id: int | str | None = None
+
+    title: str | None = None
+    excerpt: str
+    url: str | None = None
+    date: str | None = None
+
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    retrieval_score: float | None = Field(default=None, ge=0)
+    freshness_days: int | None = Field(default=None, ge=0)
+
+    relevance_reason: str | None = None
+    conflict_note: str | None = None
+    evidence_only: Literal[True] = True
+
+
 class PickEvidencePackage(BaseModel):
     pick_number: int = Field(ge=1, le=60)
     team_abbr: str | None = None
@@ -92,6 +114,7 @@ class PickEvidencePackage(BaseModel):
     conflict_evidence: list[ConflictEvidence] = Field(default_factory=list)
     evidence_sufficiency: EvidenceSufficiency
     citations: list[EvidenceCitation] = Field(default_factory=list)
+    retrieved_evidence: list[RetrievedEvidence] = Field(default_factory=list)
     narrative_explanation: str | None = None
 
 

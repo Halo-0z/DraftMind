@@ -8,6 +8,7 @@ from app.schemas.evidence import (
     MarketEvidence,
     PickEvidencePackage,
     RankingEvidence,
+    RetrievedEvidence,
     RiskEvidence,
     TeamFitEvidence,
 )
@@ -213,3 +214,129 @@ def test_evidence_citation_does_not_expose_scoring_or_replacement_fields() -> No
     }
 
     assert forbidden_fields.isdisjoint(EvidenceCitation.model_fields)
+
+
+def test_retrieved_evidence_can_be_created() -> None:
+    evidence = RetrievedEvidence(
+        source_type="scouting_report",
+        source_id="scouting:101:chunk-1",
+        citation=EvidenceCitation(
+            source_type="scouting_report",
+            source_id="scouting:101",
+            title="Prospect scouting profile",
+            evidence_source_type="scouting",
+        ),
+        entity_type="prospect",
+        entity_id=101,
+        title="Wing creation summary",
+        excerpt="The player showed advanced passing feel in transition.",
+        url="https://example.test/scouting/101",
+        date="2026-06-16",
+        confidence=0.8,
+        retrieval_score=0.72,
+        freshness_days=3,
+        relevance_reason="Explains a selected player's creation upside.",
+        conflict_note="Does not address shooting risk.",
+    )
+
+    dumped = evidence.model_dump()
+
+    assert dumped["source_type"] == "scouting_report"
+    assert dumped["excerpt"] == "The player showed advanced passing feel in transition."
+    assert dumped["citation"]["source_id"] == "scouting:101"
+    assert dumped["evidence_only"] is True
+
+
+def test_retrieved_evidence_requires_excerpt() -> None:
+    with pytest.raises(ValidationError):
+        RetrievedEvidence(source_type="news_article")
+
+
+def test_retrieved_evidence_evidence_only_defaults_to_true_and_rejects_false() -> None:
+    evidence = RetrievedEvidence(
+        source_type="manual_note",
+        excerpt="The note only explains the existing pick.",
+    )
+
+    assert evidence.evidence_only is True
+
+    with pytest.raises(ValidationError):
+        RetrievedEvidence(
+            source_type="manual_note",
+            excerpt="The note only explains the existing pick.",
+            evidence_only=False,
+        )
+
+
+def test_retrieved_evidence_rejects_confidence_outside_zero_to_one() -> None:
+    with pytest.raises(ValidationError):
+        RetrievedEvidence(source_type="news_article", excerpt="Text.", confidence=1.01)
+
+    with pytest.raises(ValidationError):
+        RetrievedEvidence(source_type="news_article", excerpt="Text.", confidence=-0.01)
+
+
+def test_retrieved_evidence_rejects_negative_retrieval_score() -> None:
+    with pytest.raises(ValidationError):
+        RetrievedEvidence(
+            source_type="scouting_report",
+            excerpt="Text.",
+            retrieval_score=-0.01,
+        )
+
+
+def test_retrieved_evidence_rejects_negative_freshness_days() -> None:
+    with pytest.raises(ValidationError):
+        RetrievedEvidence(
+            source_type="news_article",
+            excerpt="Text.",
+            freshness_days=-1,
+        )
+
+
+def test_pick_evidence_defaults_retrieved_evidence_to_empty_list() -> None:
+    package = PickEvidencePackage(
+        pick_number=10,
+        selected_player_name="Default Player",
+        evidence_sufficiency=EvidenceSufficiency(level="moderate"),
+    )
+
+    assert package.retrieved_evidence == []
+
+
+def test_pick_evidence_retrieved_evidence_lists_are_not_shared() -> None:
+    first = PickEvidencePackage(
+        pick_number=11,
+        selected_player_name="First Player",
+        evidence_sufficiency=EvidenceSufficiency(level="moderate"),
+    )
+    second = PickEvidencePackage(
+        pick_number=12,
+        selected_player_name="Second Player",
+        evidence_sufficiency=EvidenceSufficiency(level="moderate"),
+    )
+
+    first.retrieved_evidence.append(
+        RetrievedEvidence(
+            source_type="manual_note",
+            excerpt="This note belongs only to the first package.",
+        )
+    )
+
+    assert len(first.retrieved_evidence) == 1
+    assert second.retrieved_evidence == []
+
+
+def test_retrieved_evidence_does_not_expose_scoring_or_replacement_fields() -> None:
+    forbidden_fields = {
+        "recommended_player",
+        "replacement_player",
+        "new_selected_player",
+        "rerank_score",
+        "new_score",
+        "score_adjustment",
+        "ranking_weight",
+        "selection_override",
+    }
+
+    assert forbidden_fields.isdisjoint(RetrievedEvidence.model_fields)
