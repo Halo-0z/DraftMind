@@ -1,0 +1,84 @@
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class RankingEvidence(BaseModel):
+    final_score: float | None = None
+    prediction_sort_score: float | None = None
+    rank_in_available_pool: int | None = Field(default=None, ge=1)
+    score_gap_to_next: float | None = None
+    score_gap_to_previous: float | None = None
+    confidence_band: str | None = None
+    primary_score_drivers: list[str] = Field(default_factory=list)
+
+
+class TeamFitEvidence(BaseModel):
+    team_needs: list[str] = Field(default_factory=list)
+    matched_needs: list[str] = Field(default_factory=list)
+    unmatched_needs: list[str] = Field(default_factory=list)
+    fit_strength: str | None = None
+    same_team_projection_priority: bool = False
+    explanation_basis: list[str] = Field(default_factory=list)
+
+
+class MarketEvidence(BaseModel):
+    has_market_reference: bool
+    market_expected_pick: int | None = Field(default=None, ge=1, le=60)
+    market_range_min: int | None = Field(default=None, ge=1, le=60)
+    market_range_max: int | None = Field(default=None, ge=1, le=60)
+    market_pick_delta: int | None = None
+    market_alignment_label: str | None = None
+    market_alignment_notes: list[str] = Field(default_factory=list)
+    market_sources: list[str] = Field(default_factory=list)
+
+
+class RiskEvidence(BaseModel):
+    diagnostics_warnings: list[str] = Field(default_factory=list)
+    market_risk_flags: list[str] = Field(default_factory=list)
+    stats_risk_flags: list[str] = Field(default_factory=list)
+    data_quality_flags: list[str] = Field(default_factory=list)
+    overall_risk_level: str | None = None
+
+
+class ConflictEvidence(BaseModel):
+    type: str
+    severity: str
+    description: str
+    related_fields: list[str] = Field(default_factory=list)
+
+
+class EvidenceSufficiency(BaseModel):
+    level: str
+    missing_sections: list[str] = Field(default_factory=list)
+    weak_sections: list[str] = Field(default_factory=list)
+    explanation_limits: list[str] = Field(default_factory=list)
+
+
+class EvidenceCitation(BaseModel):
+    source_type: str
+    source_id: str | None = None
+    title: str | None = None
+    url: str | None = None
+    date: str | None = None
+    excerpt: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class PickEvidencePackage(BaseModel):
+    pick_number: int = Field(ge=1, le=60)
+    team_abbr: str | None = None
+    selected_player_id: int | None = None
+    selected_player_name: str
+    decision_locked: Literal[True] = True
+    decision_source: Literal["structured_simulation"] = "structured_simulation"
+    llm_can_modify_decision: Literal[False] = False
+
+    ranking_evidence: RankingEvidence | None = None
+    team_fit_evidence: TeamFitEvidence | None = None
+    market_evidence: MarketEvidence | None = None
+    risk_evidence: RiskEvidence | None = None
+    conflict_evidence: list[ConflictEvidence] = Field(default_factory=list)
+    evidence_sufficiency: EvidenceSufficiency
+    citations: list[EvidenceCitation] = Field(default_factory=list)
+    narrative_explanation: str | None = None
