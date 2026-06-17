@@ -500,3 +500,39 @@ export function fetchPickEvidence(
     }),
   });
 }
+
+// RAG-v0-M3.2-A: Read-only PickExplanation type.
+// Mirrors backend/app/schemas/evidence.py::PickExplanation.
+// Fields are snake_case to match the backend exactly — do not camelCase.
+// `decision_locked` and `llm_can_modify_decision` are literal locks: the
+// frontend must never try to flip them.  This type is display-only.
+export type PickExplanation = {
+  pick_number: number;
+  team_abbr: string | null;
+  selected_player_id: number | null;
+  selected_player_name: string;
+  summary: string;
+  key_reasons: string[];
+  market_context?: string | null;
+  risk_summary?: string | null;
+  evidence_notes: string[];
+  limitations: string[];
+  citation_refs: string[];
+  decision_locked: true;
+  llm_can_modify_decision: false;
+};
+
+// RAG-v0-M3.2-A: Fetch a deterministic mock explanation for an already-built
+// evidence package.  This calls ONLY the mock endpoint — never the real
+// explanation endpoint.  The frontend does not construct any explanation
+// itself; it only displays what the backend returns.  If this call fails,
+// the caller must surface an error and must NOT fall back to the real
+// endpoint or re-run simulation / ranking.
+export function fetchPickExplanationMock(
+  evidence: PickEvidencePackage,
+): Promise<PickExplanation> {
+  return request<PickExplanation>("/api/evidence/pick/explanation/mock", {
+    method: "POST",
+    body: JSON.stringify(evidence),
+  });
+}

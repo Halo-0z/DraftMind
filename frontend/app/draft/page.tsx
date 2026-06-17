@@ -6,8 +6,10 @@ import {
   askAgent,
   EvidenceCitation,
   PickEvidencePackage,
+  PickExplanation,
   RetrievedEvidence,
   fetchPickEvidence,
+  fetchPickExplanationMock,
   getProspects,
   getRecommendation,
   getTeamScoutingProfile,
@@ -2285,6 +2287,10 @@ function EvidencePanel({
       {isOpen && state.data ? (
         <EvidencePackageView evidence={state.data} />
       ) : null}
+
+      {isOpen && state.data ? (
+        <ExplanationPanel evidence={state.data} />
+      ) : null}
     </div>
   );
 }
@@ -2556,6 +2562,284 @@ function CitationList({ citations }: { citations: EvidenceCitation[] }) {
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// RAG-v0-M3.2-A: Read-only mock explanation panel.
+// This panel calls ONLY POST /api/evidence/pick/explanation/mock — never the
+// real explanation endpoint.  The explanation is display-only: it never
+// feeds back into ranking / scoring / selection.  If the mock call fails,
+// we surface an error and do NOT fall back to the real endpoint or re-run
+// simulation.  The panel is intentionally not a chat box — there is no
+// prompt input and no toggle to enable a real provider.
+type ExplanationState = {
+  loading: boolean;
+  error?: string;
+  data?: PickExplanation;
+};
+
+const EXPLANATION_SAFETY_TEXT =
+  "解释只基于当前 Evidence Package 生成；selected_player、final_score、prediction_sort_score 已由结构化系统锁定，LLM 不参与选人、评分或排序。";
+
+const EXPLANATION_MOCK_BADGE_TEXT =
+  "Deterministic mock explanation，用于稳定展示解释格式；不调用真实 provider。";
+
+function ExplanationPanel({ evidence }: { evidence: PickEvidencePackage }) {
+  const [state, setState] = useState<ExplanationState>({ loading: false });
+
+  async function handleGenerateExplanation() {
+    if (state.loading) {
+      return;
+    }
+    setState({ loading: true });
+    try {
+      const explanation = await fetchPickExplanationMock(evidence);
+      setState({ loading: false, data: explanation });
+    } catch (err) {
+      setState({
+        loading: false,
+        error: formatApiError(
+          err,
+          "解释生成失败；已保留结构化证据包，选人结果不受影响。",
+        ),
+      });
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-md border border-fuchsia-300/25 bg-fuchsia-300/[0.04] px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-fuchsia-200">
+          Explanation 只读解释
+        </p>
+        <button
+          className="h-8 rounded-md border border-fuchsia-300/40 bg-court-black px-3 text-[11px] font-black uppercase tracking-[0.12em] text-fuchsia-100 transition hover:border-fuchsia-300 hover:bg-fuchsia-300/10 disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={state.loading || state.data !== undefined}
+          onClick={handleGenerateExplanation}
+          type="button"
+        >
+          {state.loading
+            ? "正在生成只读解释..."
+            : state.data
+              ? "已生成解释"
+              : "生成解释"}
+        </button>
+      </div>
+      <p className="mt-1 text-[11px] leading-5 text-court-muted">
+        点击「生成解释」调用 deterministic mock explanation endpoint，只读展示解释内容；不会调用真实 provider，不会改写选人结果。
+      </p>
+
+      {state.loading ? (
+        <p className="mt-2 rounded-md border border-white/10 bg-court-black/60 px-3 py-2 text-xs leading-5 text-court-muted">
+          正在生成只读解释...
+        </p>
+      ) : null}
+
+      {!state.loading && state.error ? (
+        <p className="mt-2 rounded-md border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-200">
+          {state.error}
+        </p>
+      ) : null}
+
+      {!state.loading && !state.error && !state.data ? (
+        <p className="mt-2 rounded-md border border-white/10 bg-court-black/60 px-3 py-2 text-xs leading-5 text-court-muted">
+          暂无解释。请先加载证据包。
+        </p>
+      ) : null}
+
+      {!state.loading && state.data ? (
+        <ExplanationView explanation={state.data} citations={evidence.citations} />
+      ) : null}
+    </div>
+  );
+}
+
+function ExplanationView({
+  explanation,
+  citations,
+}: {
+  explanation: PickExplanation;
+  citations: EvidenceCitation[];
+}) {
+  // Build a lookup from source_id → citation so we can enrich citation_refs
+  // display when a matching citation exists.  We never fabricate citations:
+  // if a ref doesn't match, we just show the raw ref string.
+  const citationBySourceId = new Map<string, EvidenceCitation>();
+  for (const citation of citations) {
+    if (citation.source_id) {
+      citationBySourceId.set(citation.source_id, citation);
+    }
+  }
+
+  return (
+    <div className="mt-3 grid gap-3 text-xs leading-5 text-court-muted">
+      {/* Lock badges — always shown, decision boundary is fixed. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="inline-flex items-center rounded-md border border-court-line/30 bg-court-line/10 px-2 py-1 text-[11px] font-black text-court-line">
+          决策已锁定
+        </span>
+        <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+          LLM 不参与选人/评分
+        </span>
+        <span className="inline-flex items-center rounded-md border border-fuchsia-300/30 bg-fuchsia-300/10 px-2 py-1 text-[11px] font-black text-fuchsia-100">
+          Mock explanation
+        </span>
+      </div>
+
+      {/* Summary — top of the explanation. */}
+      <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
+        <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
+          Summary 摘要
+        </p>
+        <p className="mt-2 text-xs leading-6 text-court-text">
+          {explanation.summary}
+        </p>
+      </div>
+
+      {/* Key reasons — list. */}
+      {explanation.key_reasons.length > 0 ? (
+        <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
+            Key Reasons 关键理由
+          </p>
+          <ul className="mt-2 grid gap-1.5">
+            {explanation.key_reasons.map((reason, index) => (
+              <li
+                className="flex gap-2 text-[11px] leading-5 text-court-text"
+                key={`reason-${index}`}
+              >
+                <span aria-hidden="true" className="text-court-line">
+                  ·
+                </span>
+                <span>{reason}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {/* Market context — only if present. */}
+      {explanation.market_context ? (
+        <div className="rounded-md border border-sky-300/20 bg-sky-300/[0.05] p-3">
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-sky-200">
+            Market Context 市场上下文
+          </p>
+          <p className="mt-2 text-[11px] leading-5 text-court-text">
+            {explanation.market_context}
+          </p>
+        </div>
+      ) : null}
+
+      {/* Risk summary — warning style if present. */}
+      {explanation.risk_summary ? (
+        <div className="rounded-md border border-amber-300/30 bg-amber-300/[0.07] p-3">
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-amber-200">
+            Risk Summary 风险摘要
+          </p>
+          <p className="mt-2 text-[11px] leading-5 text-amber-100">
+            {explanation.risk_summary}
+          </p>
+        </div>
+      ) : null}
+
+      {/* Evidence notes — list. */}
+      {explanation.evidence_notes.length > 0 ? (
+        <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
+            Evidence Notes 证据说明
+          </p>
+          <ul className="mt-2 grid gap-1.5">
+            {explanation.evidence_notes.map((note, index) => (
+              <li
+                className="flex gap-2 text-[11px] leading-5 text-court-text"
+                key={`note-${index}`}
+              >
+                <span aria-hidden="true" className="text-court-line">
+                  ·
+                </span>
+                <span>{note}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {/* Limitations — must always show; fallback text if empty. */}
+      <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
+        <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
+          Limitations 局限说明
+        </p>
+        {explanation.limitations.length > 0 ? (
+          <ul className="mt-2 grid gap-1.5">
+            {explanation.limitations.map((limitation, index) => (
+              <li
+                className="flex gap-2 text-[11px] leading-5 text-court-text"
+                key={`limitation-${index}`}
+              >
+                <span aria-hidden="true" className="text-amber-300">
+                  ·
+                </span>
+                <span>{limitation}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-2 text-[11px] leading-5 text-court-muted">
+            暂无额外限制说明。
+          </p>
+        )}
+      </div>
+
+      {/* Citation refs — list, enriched with citation metadata when safely matchable. */}
+      {explanation.citation_refs.length > 0 ? (
+        <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
+            Citation Refs 引用
+          </p>
+          <div className="mt-2 grid gap-1.5">
+            {explanation.citation_refs.map((ref, index) => {
+              const matched = citationBySourceId.get(ref);
+              return (
+                <div
+                  className="flex flex-wrap items-center gap-1.5 text-[10px] font-bold"
+                  key={`ref-${index}`}
+                >
+                  <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-court-text">
+                    {ref}
+                  </span>
+                  {matched?.title ? (
+                    <span className="text-court-text">{matched.title}</span>
+                  ) : null}
+                  {matched?.url ? (
+                    <a
+                      className="text-sky-200 underline-offset-2 hover:underline"
+                      href={matched.url}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      来源
+                    </a>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Fixed safety notice — always shown. */}
+      <div className="rounded-md border border-court-line/30 bg-court-line/[0.06] p-3">
+        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-court-line">
+          Safety 安全文案
+        </p>
+        <p className="mt-1 text-[11px] leading-5 text-court-text">
+          {EXPLANATION_SAFETY_TEXT}
+        </p>
+        <p className="mt-2 text-[11px] leading-5 text-fuchsia-100">
+          {EXPLANATION_MOCK_BADGE_TEXT}
+        </p>
       </div>
     </div>
   );
