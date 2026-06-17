@@ -158,3 +158,4 @@ class PickEvidencePackage(BaseModel):
 class PickEvidenceRequest(BaseModel):
     simulation: SimulateResponse
     pick: SimulatedPickRead
+    manual_notes: list[ManualNote] = Field(default_factory=list, max_length=10)

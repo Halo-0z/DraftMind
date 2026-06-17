@@ -1,5 +1,6 @@
 import copy
 
+from app.schemas.evidence import ManualNote
 from app.schemas.recommendation import RankedProspectRead, ScoreBreakdown
 from app.schemas.simulation import SimulateResponse, SimulatedPickRead, TradeEvaluation
 from app.schemas.team import TeamRead
@@ -382,3 +383,344 @@ def test_retrieved_evidence_does_not_expose_decision_override_fields() -> None:
 
     assert forbidden_fields.isdisjoint(package.model_dump())
     assert package.retrieved_evidence == []
+
+
+def _note(**overrides) -> ManualNote:
+    defaults = {
+        "year": 2026,
+        "entity_type": "prospect",
+        "entity_id": 1,
+        "prospect_id": 1,
+        "title": "Workout observation",
+        "body": "The player showed advanced passing feel in transition.",
+        "summary": "Passing feel note.",
+        "confidence": 0.8,
+    }
+    defaults.update(overrides)
+    return ManualNote(**defaults)
+
+
+def test_manual_notes_none_keeps_retrieved_evidence_empty() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    package = build_pick_evidence(_simulation(pick), pick)
+
+    assert package.retrieved_evidence == []
+
+
+def test_manual_notes_empty_list_keeps_retrieved_evidence_empty() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[])
+
+    assert package.retrieved_evidence == []
+
+
+def test_matched_prospect_note_appears_in_retrieved_evidence() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(note_id=42, entity_type="prospect", prospect_id=1, entity_id=1)
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert len(package.retrieved_evidence) == 1
+    retrieved = package.retrieved_evidence[0]
+    assert retrieved.source_type == "manual_note"
+    assert retrieved.source_id == "42"
+    assert retrieved.entity_type == "prospect"
+    assert retrieved.entity_id == 1
+
+
+def test_matched_prospect_note_by_name_in_entity_id() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(
+        note_id=43,
+        entity_type="prospect",
+        prospect_id=None,
+        entity_id="Keaton Sample",
+    )
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert len(package.retrieved_evidence) == 1
+    assert package.retrieved_evidence[0].source_id == "43"
+
+
+def test_matched_manual_note_citation_appears_in_citations() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(note_id=42, entity_type="prospect", prospect_id=1)
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    manual_citations = [
+        c for c in package.citations
+        if c.evidence_source_type == "manual_note"
+    ]
+    assert len(manual_citations) == 1
+    assert manual_citations[0].source_id == "42"
+    assert manual_citations[0].source_type == "manual"
+
+
+def test_manual_note_does_not_change_selected_player() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(entity_type="prospect", prospect_id=1)
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert package.selected_player_name == "Keaton Sample"
+    assert package.selected_player_id == 1
+
+
+def test_manual_note_does_not_change_ranking_final_score() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0, prediction_sort_score=83.5))
+    note = _note(entity_type="prospect", prospect_id=1)
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert package.ranking_evidence is not None
+    assert package.ranking_evidence.final_score == 82.0
+
+
+def test_manual_note_does_not_change_prediction_sort_score() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0, prediction_sort_score=83.5))
+    note = _note(entity_type="prospect", prospect_id=1)
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert package.ranking_evidence is not None
+    assert package.ranking_evidence.prediction_sort_score == 83.5
+
+
+def test_manual_note_does_not_call_ranking_engine(monkeypatch) -> None:
+    def fail_rank_prospects(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("evidence service must not call ranking_engine")
+
+    monkeypatch.setattr(
+        "app.services.ranking_engine.rank_prospects",
+        fail_rank_prospects,
+    )
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(entity_type="prospect", prospect_id=1)
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert len(package.retrieved_evidence) == 1
+
+
+def test_unrelated_prospect_note_is_ignored() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(entity_type="prospect", prospect_id=999, entity_id=999)
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert package.retrieved_evidence == []
+
+
+def test_team_note_matches_by_team_id() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(
+        note_id=50,
+        entity_type="team",
+        team_id=1,
+        entity_id=1,
+        prospect_id=None,
+    )
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert len(package.retrieved_evidence) == 1
+    assert package.retrieved_evidence[0].entity_type == "team"
+
+
+def test_team_note_matches_by_team_abbr_in_entity_id() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(
+        note_id=51,
+        entity_type="team",
+        team_id=None,
+        entity_id="LAC",
+        prospect_id=None,
+    )
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert len(package.retrieved_evidence) == 1
+
+
+def test_team_note_does_not_match_other_team() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(
+        entity_type="team",
+        team_id=999,
+        entity_id="LAL",
+        prospect_id=None,
+    )
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert package.retrieved_evidence == []
+
+
+def test_pick_note_matches_by_pick_no() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(
+        note_id=60,
+        entity_type="pick",
+        pick_no=5,
+        entity_id=5,
+        prospect_id=None,
+    )
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert len(package.retrieved_evidence) == 1
+    assert package.retrieved_evidence[0].entity_type == "pick"
+
+
+def test_pick_note_does_not_match_other_pick_no() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(
+        entity_type="pick",
+        pick_no=10,
+        entity_id=10,
+        prospect_id=None,
+    )
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert package.retrieved_evidence == []
+
+
+def test_simulation_context_note_is_admitted() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(
+        note_id=70,
+        entity_type="simulation_context",
+        entity_id=None,
+        prospect_id=None,
+        team_id=None,
+        pick_no=None,
+    )
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert len(package.retrieved_evidence) == 1
+    assert package.retrieved_evidence[0].entity_type == "simulation_context"
+
+
+def test_simulation_context_note_with_pick_no_is_rejected() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(
+        entity_type="simulation_context",
+        pick_no=5,
+        prospect_id=None,
+        team_id=None,
+    )
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert package.retrieved_evidence == []
+
+
+def test_market_projection_note_without_aux_match_is_ignored() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(
+        entity_type="market_projection",
+        prospect_id=None,
+        team_id=None,
+        pick_no=None,
+        entity_id=None,
+    )
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert package.retrieved_evidence == []
+
+
+def test_market_projection_note_with_prospect_aux_match_is_admitted() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(
+        note_id=80,
+        entity_type="market_projection",
+        prospect_id=1,
+        team_id=None,
+        pick_no=None,
+        entity_id=None,
+    )
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert len(package.retrieved_evidence) == 1
+    assert package.retrieved_evidence[0].entity_type == "market_projection"
+
+
+def test_scouting_profile_note_with_team_aux_match_is_admitted() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(
+        note_id=81,
+        entity_type="scouting_profile",
+        prospect_id=None,
+        team_id=1,
+        pick_no=None,
+        entity_id=None,
+    )
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert len(package.retrieved_evidence) == 1
+    assert package.retrieved_evidence[0].entity_type == "scouting_profile"
+
+
+def test_news_article_note_with_pick_aux_match_is_admitted() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(
+        note_id=82,
+        entity_type="news_article",
+        prospect_id=None,
+        team_id=None,
+        pick_no=5,
+        entity_id=None,
+    )
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    assert len(package.retrieved_evidence) == 1
+    assert package.retrieved_evidence[0].entity_type == "news_article"
+
+
+def test_manual_notes_do_not_expose_dangerous_fields() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(entity_type="prospect", prospect_id=1)
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=[note])
+
+    forbidden_fields = {
+        "recommended_player",
+        "replacement_player",
+        "new_selected_player",
+        "rerank_score",
+        "new_score",
+        "score_adjustment",
+        "ranking_weight",
+        "selection_override",
+        "final_score_delta",
+        "prediction_sort_delta",
+    }
+    assert forbidden_fields.isdisjoint(package.model_dump())
+    for retrieved in package.retrieved_evidence:
+        assert forbidden_fields.isdisjoint(retrieved.model_dump())
+    for citation in package.citations:
+        assert forbidden_fields.isdisjoint(citation.model_dump())
+
+
+def test_multiple_matched_notes_all_appear() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    notes = [
+        _note(note_id=1, entity_type="prospect", prospect_id=1),
+        _note(note_id=2, entity_type="team", team_id=1, prospect_id=None),
+        _note(note_id=3, entity_type="pick", pick_no=5, prospect_id=None),
+        _note(note_id=4, entity_type="prospect", prospect_id=999, entity_id=999),
+    ]
+
+    package = build_pick_evidence(_simulation(pick), pick, manual_notes=notes)
+
+    assert len(package.retrieved_evidence) == 3
+    source_ids = {r.source_id for r in package.retrieved_evidence}
+    assert source_ids == {"1", "2", "3"}

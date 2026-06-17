@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.schemas.evidence import ManualNote
 from app.schemas.prospect import ProspectRead
 from app.schemas.recommendation import RankedProspectRead, ScoreBreakdown
 from app.schemas.simulation import SimulateResponse, SimulatedPickRead, TradeEvaluation
@@ -102,7 +103,7 @@ def _pick(selected: RankedProspectRead) -> SimulatedPickRead:
     )
 
 
-def _payload(pick: SimulatedPickRead) -> dict:
+def _payload(pick: SimulatedPickRead, *, manual_notes: list[ManualNote] | None = None) -> dict:
     simulation = SimulateResponse(
         year=2026,
         rounds=1,
@@ -111,10 +112,28 @@ def _payload(pick: SimulatedPickRead) -> dict:
         picks=[pick],
         market_top30_missing_warnings=[],
     )
-    return {
+    payload = {
         "simulation": simulation.model_dump(),
         "pick": pick.model_dump(),
     }
+    if manual_notes is not None:
+        payload["manual_notes"] = [note.model_dump() for note in manual_notes]
+    return payload
+
+
+def _note(**overrides) -> ManualNote:
+    defaults = {
+        "year": 2026,
+        "entity_type": "prospect",
+        "entity_id": 1,
+        "prospect_id": 1,
+        "title": "Workout observation",
+        "body": "The player showed advanced passing feel in transition.",
+        "summary": "Passing feel note.",
+        "confidence": 0.8,
+    }
+    defaults.update(overrides)
+    return ManualNote(**defaults)
 
 
 def test_pick_evidence_api_returns_package_for_simulated_pick() -> None:
@@ -277,3 +296,129 @@ def test_pick_evidence_api_retrieved_evidence_does_not_expose_override_fields() 
     }
     assert forbidden_fields.isdisjoint(body)
     assert body["retrieved_evidence"] == []
+
+
+def test_api_without_manual_notes_keeps_legacy_behavior() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+
+    response = client.post("/api/evidence/pick", json=_payload(pick))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["retrieved_evidence"] == []
+    manual_citations = [
+        c for c in body["citations"]
+        if c.get("evidence_source_type") == "manual_note"
+    ]
+    assert manual_citations == []
+
+
+def test_api_with_matched_manual_notes_returns_retrieved_evidence() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(note_id=42, entity_type="prospect", prospect_id=1, entity_id=1)
+
+    response = client.post("/api/evidence/pick", json=_payload(pick, manual_notes=[note]))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["retrieved_evidence"]) == 1
+    retrieved = body["retrieved_evidence"][0]
+    assert retrieved["source_type"] == "manual_note"
+    assert retrieved["source_id"] == "42"
+    assert retrieved["entity_type"] == "prospect"
+    assert retrieved["entity_id"] == 1
+    assert retrieved["evidence_only"] is True
+
+
+def test_api_with_matched_manual_notes_returns_citation() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(note_id=42, entity_type="prospect", prospect_id=1)
+
+    response = client.post("/api/evidence/pick", json=_payload(pick, manual_notes=[note]))
+
+    assert response.status_code == 200
+    body = response.json()
+    manual_citations = [
+        c for c in body["citations"]
+        if c.get("evidence_source_type") == "manual_note"
+    ]
+    assert len(manual_citations) == 1
+    assert manual_citations[0]["source_id"] == "42"
+    assert manual_citations[0]["source_type"] == "manual"
+    assert manual_citations[0]["evidence_only"] is True
+
+
+def test_api_ignores_unrelated_manual_notes() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(entity_type="prospect", prospect_id=999, entity_id=999)
+
+    response = client.post("/api/evidence/pick", json=_payload(pick, manual_notes=[note]))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["retrieved_evidence"] == []
+    manual_citations = [
+        c for c in body["citations"]
+        if c.get("evidence_source_type") == "manual_note"
+    ]
+    assert manual_citations == []
+
+
+def test_api_with_manual_notes_does_not_call_ranking_engine(monkeypatch) -> None:
+    def fail_rank_prospects(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("Evidence API must not call ranking_engine")
+
+    monkeypatch.setattr(
+        "app.services.ranking_engine.rank_prospects",
+        fail_rank_prospects,
+    )
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(entity_type="prospect", prospect_id=1)
+
+    response = client.post("/api/evidence/pick", json=_payload(pick, manual_notes=[note]))
+
+    assert response.status_code == 200
+    assert len(response.json()["retrieved_evidence"]) == 1
+
+
+def test_api_with_manual_notes_does_not_change_decision_or_scores() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(entity_type="prospect", prospect_id=1)
+
+    response = client.post("/api/evidence/pick", json=_payload(pick, manual_notes=[note]))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["selected_player_name"] == "Keaton Sample"
+    assert body["selected_player_id"] == 1
+    assert body["ranking_evidence"]["final_score"] == 82.0
+    assert body["ranking_evidence"]["prediction_sort_score"] is None
+    assert body["decision_locked"] is True
+    assert body["llm_can_modify_decision"] is False
+
+
+def test_api_with_manual_notes_does_not_expose_dangerous_fields() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    note = _note(entity_type="prospect", prospect_id=1)
+
+    response = client.post("/api/evidence/pick", json=_payload(pick, manual_notes=[note]))
+
+    assert response.status_code == 200
+    body = response.json()
+    forbidden_fields = {
+        "recommended_player",
+        "replacement_player",
+        "new_selected_player",
+        "rerank_score",
+        "new_score",
+        "score_adjustment",
+        "ranking_weight",
+        "selection_override",
+        "final_score_delta",
+        "prediction_sort_delta",
+    }
+    assert forbidden_fields.isdisjoint(body)
+    for retrieved in body["retrieved_evidence"]:
+        assert forbidden_fields.isdisjoint(retrieved)
+    for citation in body["citations"]:
+        assert forbidden_fields.isdisjoint(citation)

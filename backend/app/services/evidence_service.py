@@ -4,14 +4,17 @@ from app.schemas.evidence import (
     ConflictEvidence,
     EvidenceCitation,
     EvidenceSufficiency,
+    ManualNote,
     MarketEvidence,
     PickEvidencePackage,
     RankingEvidence,
+    RetrievedEvidence,
     RiskEvidence,
     TeamFitEvidence,
 )
 from app.schemas.recommendation import RankedProspectRead
 from app.schemas.simulation import SimulateResponse, SimulatedPickRead
+from app.services.manual_note_mapper import manual_note_to_evidence_pair
 
 
 MARKET_DELTA_CONFLICT_THRESHOLD = 8
@@ -20,6 +23,8 @@ MARKET_DELTA_CONFLICT_THRESHOLD = 8
 def build_pick_evidence(
     simulation: SimulateResponse,
     pick: SimulatedPickRead,
+    *,
+    manual_notes: list[ManualNote] | None = None,
 ) -> PickEvidencePackage:
     selected = pick.selected_player
     ranking_evidence = _build_ranking_evidence(pick)
@@ -35,6 +40,14 @@ def build_pick_evidence(
         diagnostics_warnings=risk_evidence.diagnostics_warnings,
         market_top30_missing_warnings=simulation.market_top30_missing_warnings,
     )
+
+    citations = _build_citations(selected)
+    retrieved_evidence: list[RetrievedEvidence] = []
+    matched_notes = _manual_notes_for_pick(manual_notes, pick)
+    for note in matched_notes:
+        retrieved, citation = manual_note_to_evidence_pair(note)
+        retrieved_evidence.append(retrieved)
+        citations.append(citation)
 
     return PickEvidencePackage(
         pick_number=pick.pick,
@@ -52,8 +65,93 @@ def build_pick_evidence(
             risk_evidence=risk_evidence,
             conflict_evidence=conflict_evidence,
         ),
-        citations=_build_citations(selected),
+        citations=citations,
+        retrieved_evidence=retrieved_evidence,
     )
+
+
+def _manual_notes_for_pick(
+    manual_notes: list[ManualNote] | None,
+    pick: SimulatedPickRead,
+) -> list[ManualNote]:
+    """Filter manual notes that are relevant to this pick.
+
+    Manual notes are evidence-only. Matching is by entity identity only and
+    never influences scoring, selection, or ranking. Irrelevant notes are
+    silently ignored.
+    """
+    if not manual_notes:
+        return []
+
+    selected_prospect_id = pick.selected_player.prospect.id
+    selected_prospect_name = pick.selected_player.prospect.name
+    team_id = pick.team.id
+    team_abbr = pick.team.abbr
+    pick_no = pick.pick
+
+    matched: list[ManualNote] = []
+    for note in manual_notes:
+        if _note_matches_pick(
+            note,
+            selected_prospect_id=selected_prospect_id,
+            selected_prospect_name=selected_prospect_name,
+            team_id=team_id,
+            team_abbr=team_abbr,
+            pick_no=pick_no,
+        ):
+            matched.append(note)
+    return matched
+
+
+def _note_matches_pick(
+    note: ManualNote,
+    *,
+    selected_prospect_id: int,
+    selected_prospect_name: str,
+    team_id: int,
+    team_abbr: str,
+    pick_no: int,
+) -> bool:
+    entity_type = note.entity_type
+
+    if entity_type == "prospect":
+        return (
+            note.prospect_id == selected_prospect_id
+            or note.entity_id == selected_prospect_id
+            or note.entity_id == selected_prospect_name
+        )
+
+    if entity_type == "team":
+        return (
+            note.team_id == team_id
+            or note.entity_id == team_id
+            or note.entity_id == team_abbr
+        )
+
+    if entity_type == "pick":
+        return note.pick_no == pick_no or note.entity_id == pick_no
+
+    if entity_type == "simulation_context":
+        return (
+            note.pick_no is None
+            and note.prospect_id is None
+            and note.team_id is None
+        )
+
+    # market_projection / scouting_profile / news_article: only allow when an
+    # auxiliary field matches the current pick context.
+    if entity_type in {
+        "market_projection",
+        "scouting_profile",
+        "news_article",
+    }:
+        return (
+            note.prospect_id == selected_prospect_id
+            or note.team_id == team_id
+            or note.pick_no == pick_no
+        )
+
+    return False
 
 
 def _build_ranking_evidence(pick: SimulatedPickRead) -> RankingEvidence:
