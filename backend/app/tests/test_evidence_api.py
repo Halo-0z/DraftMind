@@ -189,3 +189,91 @@ def test_pick_evidence_api_does_not_call_ranking_engine(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["selected_player_name"] == "Keaton Sample"
+
+
+def test_pick_evidence_api_returns_retrieved_evidence_slot() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+
+    response = client.post("/api/evidence/pick", json=_payload(pick))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "retrieved_evidence" in body
+    assert body["retrieved_evidence"] == []
+
+
+def test_pick_evidence_api_retrieved_evidence_default_is_independent_list() -> None:
+    pick_a = _pick(_ranked(1, "Player A", 82.0))
+    pick_b = _pick(_ranked(4, "Player B", 80.0))
+
+    response_a = client.post("/api/evidence/pick", json=_payload(pick_a))
+    response_b = client.post("/api/evidence/pick", json=_payload(pick_b))
+
+    assert response_a.status_code == 200
+    assert response_b.status_code == 200
+    body_a = response_a.json()
+    body_b = response_b.json()
+    assert body_a["retrieved_evidence"] == []
+    assert body_b["retrieved_evidence"] == []
+    assert body_a["retrieved_evidence"] is not body_b["retrieved_evidence"]
+
+
+def test_pick_evidence_api_retrieved_evidence_does_not_change_selected_player() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+
+    response = client.post("/api/evidence/pick", json=_payload(pick))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["retrieved_evidence"] == []
+    assert body["selected_player_name"] == "Keaton Sample"
+    assert body["selected_player_id"] == 1
+
+
+def test_pick_evidence_api_retrieved_evidence_does_not_change_ranking_scores() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+
+    response = client.post("/api/evidence/pick", json=_payload(pick))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["retrieved_evidence"] == []
+    assert body["ranking_evidence"]["final_score"] == 82.0
+    assert body["ranking_evidence"]["prediction_sort_score"] is None
+
+
+def test_pick_evidence_api_retrieved_evidence_does_not_call_ranking_engine(
+    monkeypatch,
+) -> None:
+    def fail_rank_prospects(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("Evidence API must not call ranking_engine")
+
+    monkeypatch.setattr(
+        "app.services.ranking_engine.rank_prospects",
+        fail_rank_prospects,
+    )
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+
+    response = client.post("/api/evidence/pick", json=_payload(pick))
+
+    assert response.status_code == 200
+    assert response.json()["retrieved_evidence"] == []
+
+
+def test_pick_evidence_api_retrieved_evidence_does_not_expose_override_fields() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+
+    response = client.post("/api/evidence/pick", json=_payload(pick))
+
+    assert response.status_code == 200
+    body = response.json()
+    forbidden_fields = {
+        "recommended_player",
+        "replacement_player",
+        "new_selected_player",
+        "rerank_score",
+        "new_score",
+        "selection_override",
+    }
+    assert forbidden_fields.isdisjoint(body)
+    assert body["retrieved_evidence"] == []

@@ -302,3 +302,83 @@ def test_unrelated_market_top30_missing_warning_does_not_attach_to_pick() -> Non
         for warning in package.risk_evidence.market_risk_flags
     )
     assert package.evidence_sufficiency.level == "strong"
+
+
+def test_build_pick_evidence_defaults_retrieved_evidence_to_empty_list() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0, prediction_sort_score=83.5))
+    package = build_pick_evidence(_simulation(pick), pick)
+
+    assert package.retrieved_evidence == []
+
+
+def test_build_pick_evidence_retrieved_evidence_default_not_shared_across_packages() -> None:
+    pick_a = _pick(_ranked(1, "Player A", 82.0))
+    pick_b = _pick(_ranked(4, "Player B", 80.0))
+
+    package_a = build_pick_evidence(_simulation(pick_a), pick_a)
+    package_b = build_pick_evidence(_simulation(pick_b), pick_b)
+
+    assert package_a.retrieved_evidence == []
+    assert package_b.retrieved_evidence == []
+    assert package_a.retrieved_evidence is not package_b.retrieved_evidence
+
+
+def test_build_pick_evidence_does_not_call_ranking_engine_for_retrieved_evidence(
+    monkeypatch,
+) -> None:
+    def fail_rank_prospects(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("evidence service must not call ranking_engine")
+
+    monkeypatch.setattr(
+        "app.services.ranking_engine.rank_prospects",
+        fail_rank_prospects,
+    )
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0, prediction_sort_score=83.5))
+
+    package = build_pick_evidence(_simulation(pick), pick)
+
+    assert package.retrieved_evidence == []
+
+
+def test_retrieved_evidence_does_not_change_selected_player_name() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    package = build_pick_evidence(_simulation(pick), pick)
+
+    assert package.retrieved_evidence == []
+    assert package.selected_player_name == "Keaton Sample"
+    assert package.selected_player_id == 1
+
+
+def test_retrieved_evidence_does_not_change_ranking_final_score() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0, prediction_sort_score=83.5))
+    package = build_pick_evidence(_simulation(pick), pick)
+
+    assert package.retrieved_evidence == []
+    assert package.ranking_evidence is not None
+    assert package.ranking_evidence.final_score == 82.0
+
+
+def test_retrieved_evidence_does_not_change_prediction_sort_score() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0, prediction_sort_score=83.5))
+    package = build_pick_evidence(_simulation(pick), pick)
+
+    assert package.retrieved_evidence == []
+    assert package.ranking_evidence is not None
+    assert package.ranking_evidence.prediction_sort_score == 83.5
+
+
+def test_retrieved_evidence_does_not_expose_decision_override_fields() -> None:
+    pick = _pick(_ranked(1, "Keaton Sample", 82.0))
+    package = build_pick_evidence(_simulation(pick), pick)
+
+    forbidden_fields = {
+        "recommended_player",
+        "replacement_player",
+        "new_selected_player",
+        "rerank_score",
+        "new_score",
+        "selection_override",
+    }
+
+    assert forbidden_fields.isdisjoint(package.model_dump())
+    assert package.retrieved_evidence == []
