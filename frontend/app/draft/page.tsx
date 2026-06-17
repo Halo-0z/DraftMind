@@ -4,6 +4,10 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   AgentAskResponse,
   askAgent,
+  EvidenceCitation,
+  PickEvidencePackage,
+  RetrievedEvidence,
+  fetchPickEvidence,
   getProspects,
   getRecommendation,
   getTeamScoutingProfile,
@@ -169,15 +173,15 @@ function hasProjectionDiagnostics(player: RankedProspect): boolean {
     player.projection_expected_pick !== undefined &&
     player.projection_expected_pick !== null
   ) || (
-    player.team_projection_type !== undefined &&
-    player.team_projection_type !== null
-  ) || hasPredictionShadow(player) || (
-    player.prediction_sort_score !== undefined &&
-    player.prediction_sort_score !== null
-  ) || (
-    player.market_alignment_label !== undefined &&
-    player.market_alignment_label !== null
-  );
+      player.team_projection_type !== undefined &&
+      player.team_projection_type !== null
+    ) || hasPredictionShadow(player) || (
+      player.prediction_sort_score !== undefined &&
+      player.prediction_sort_score !== null
+    ) || (
+      player.market_alignment_label !== undefined &&
+      player.market_alignment_label !== null
+    );
 }
 
 function hasPredictionShadow(player: RankedProspect): boolean {
@@ -925,11 +929,10 @@ export default function DraftPage() {
                   return (
                     <button
                       aria-pressed={isActive}
-                      className={`h-12 px-3 text-sm font-black transition ${
-                        isActive
-                          ? "bg-court-line text-court-black"
-                          : "text-court-muted hover:bg-white/[0.04] hover:text-court-line"
-                      }`}
+                      className={`h-12 px-3 text-sm font-black transition ${isActive
+                        ? "bg-court-line text-court-black"
+                        : "text-court-muted hover:bg-white/[0.04] hover:text-court-line"
+                        }`}
                       key={option.rounds}
                       onClick={() => setSimulationRounds(option.rounds)}
                       type="button"
@@ -1011,15 +1014,15 @@ export default function DraftPage() {
                   onChange={(event) => setShowPredictionShadow(event.target.checked)}
                   type="checkbox"
                 />
-                  <span>
-                    <span className="block text-sm font-black text-court-text">
+                <span>
+                  <span className="block text-sm font-black text-court-text">
                     显示预测参考
-                    </span>
-                    <span className="mt-1 block text-xs leading-5 text-court-muted">
-                    只显示预测顺位、选秀区间和球队倾向，帮助你判断模型为什么这么排；不会改变模拟选人结果。
-                    </span>
                   </span>
-                </label>
+                  <span className="mt-1 block text-xs leading-5 text-court-muted">
+                    只显示预测顺位、选秀区间和球队倾向，帮助你判断模型为什么这么排；不会改变模拟选人结果。
+                  </span>
+                </span>
+              </label>
               <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-md border border-fuchsia-300/25 bg-fuchsia-300/[0.04] p-3 transition hover:border-fuchsia-300/55">
                 <input
                   checked={usePredictionCalibration}
@@ -1033,15 +1036,15 @@ export default function DraftPage() {
                   }}
                   type="checkbox"
                 />
-                  <span>
-                    <span className="block text-sm font-black text-court-text">
+                <span>
+                  <span className="block text-sm font-black text-court-text">
                     用预测信息辅助选人
-                    </span>
-                    <span className="mt-1 block text-xs leading-5 text-court-muted">
-                    打开后，系统会把预测顺位、选秀区间和球队倾向纳入自动选人；关闭时仍按原评分选人。它不会直接照搬媒体模拟榜。
-                    </span>
                   </span>
-                </label>
+                  <span className="mt-1 block text-xs leading-5 text-court-muted">
+                    打开后，系统会把预测顺位、选秀区间和球队倾向纳入自动选人；关闭时仍按原评分选人。它不会直接照搬媒体模拟榜。
+                  </span>
+                </span>
+              </label>
             </div>
 
             {/* Phase 3: locked picks / user override editor.
@@ -1730,13 +1733,13 @@ function ProjectionPredictionDiagnostics({
               预测参考只展示顺位区间和球队倾向，不会改变模拟选人结果。
             </p>
           </div>
-        {hasPredictionShadow(player) ? (
-          <span className="rounded-md border border-sky-300/30 bg-sky-300/10 px-2 py-1 text-xs font-black text-sky-100">
-            Shadow {player.prediction_shadow_score?.toFixed(1)}
-          </span>
-        ) : null}
+          {hasPredictionShadow(player) ? (
+            <span className="rounded-md border border-sky-300/30 bg-sky-300/10 px-2 py-1 text-xs font-black text-sky-100">
+              Shadow {player.prediction_shadow_score?.toFixed(1)}
+            </span>
+          ) : null}
           {player.prediction_sort_score !== undefined &&
-          player.prediction_sort_score !== null ? (
+            player.prediction_sort_score !== null ? (
             <span className="rounded-md border border-fuchsia-300/30 bg-fuchsia-300/10 px-2 py-1 text-xs font-black text-fuchsia-100">
               预测辅助分 {player.prediction_sort_score.toFixed(1)}
             </span>
@@ -1796,11 +1799,10 @@ function ProjectionPredictionDiagnostics({
         ) : null}
         {shadowDelta ? (
           <span
-            className={`inline-flex items-center rounded-md border px-2 py-1 text-[11px] font-black ${
-              (player.prediction_shadow_delta ?? 0) >= 0
-                ? "border-court-line/30 bg-court-line/10 text-court-line"
-                : "border-amber-300/30 bg-amber-300/10 text-amber-100"
-            }`}
+            className={`inline-flex items-center rounded-md border px-2 py-1 text-[11px] font-black ${(player.prediction_shadow_delta ?? 0) >= 0
+              ? "border-court-line/30 bg-court-line/10 text-court-line"
+              : "border-amber-300/30 bg-amber-300/10 text-amber-100"
+              }`}
             title="+3 表示参考排序比原候选排序高 3 位。"
           >
             排序变化 {shadowDelta}
@@ -1819,8 +1821,8 @@ function ProjectionPredictionDiagnostics({
       </div>
 
       {!compact &&
-      player.prediction_sort_score !== undefined &&
-      player.prediction_sort_score !== null ? (
+        player.prediction_sort_score !== undefined &&
+        player.prediction_sort_score !== null ? (
         <p className="mt-2 text-[11px] leading-5 text-court-muted">
           预测辅助分只用于“用预测信息辅助选人”模式，不会改写原始评分。
         </p>
@@ -1920,32 +1922,32 @@ function CandidateBoardPreview({
         {candidates.map((candidate) => {
           const sourceLabel = candidateSourceLabel(candidate.candidate_source);
           return (
-          <div
-            className="rounded-md border border-white/10 bg-white/[0.025] px-3 py-2"
-            key={candidate.prospect.id}
-          >
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <span className="text-sm font-bold text-court-text">
-                  {candidate.prospect.name}
-                </span>
-                {sourceLabel ? (
-                  <span className="rounded-md border border-sky-300/30 bg-sky-300/10 px-1.5 py-0.5 text-[10px] font-black text-sky-100">
-                    {sourceLabel}
+            <div
+              className="rounded-md border border-white/10 bg-white/[0.025] px-3 py-2"
+              key={candidate.prospect.id}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="text-sm font-bold text-court-text">
+                    {candidate.prospect.name}
                   </span>
-                ) : null}
+                  {sourceLabel ? (
+                    <span className="rounded-md border border-sky-300/30 bg-sky-300/10 px-1.5 py-0.5 text-[10px] font-black text-sky-100">
+                      {sourceLabel}
+                    </span>
+                  ) : null}
+                </div>
+                <span className="text-xs font-black text-court-muted">
+                  Final {candidate.scores.final_score}
+                </span>
               </div>
-              <span className="text-xs font-black text-court-muted">
-                Final {candidate.scores.final_score}
-              </span>
+              <ScoutingDiagnostics compact player={candidate} />
+              <ProjectionPredictionDiagnostics compact player={candidate} />
+              <RiskDiagnosticsWarnings
+                compact
+                warnings={diagnosticsWarnings(candidate)}
+              />
             </div>
-            <ScoutingDiagnostics compact player={candidate} />
-            <ProjectionPredictionDiagnostics compact player={candidate} />
-            <RiskDiagnosticsWarnings
-              compact
-              warnings={diagnosticsWarnings(candidate)}
-            />
-          </div>
           );
         })}
       </div>
@@ -2099,6 +2101,7 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                     <CandidateBoardPreview candidates={pick.candidate_board} />
                   </div>
                 </details>
+                <EvidencePanel pick={pick} simulation={simulation} />
               </article>
             );
           })}
@@ -2205,5 +2208,355 @@ function NewsPanel({
         </div>
       ) : null}
     </section>
+  );
+}
+
+// RAG-v0-M2.9: Read-only Evidence panel.
+// This panel calls POST /api/evidence/pick with manual_notes=[] and displays
+// the returned PickEvidencePackage.  It is display-only — it never feeds back
+// into ranking, scoring, or selection.  Manual-note-sourced evidence is
+// explicitly tagged as "只读证据，不参与评分".
+type EvidenceState = {
+  loading: boolean;
+  error?: string;
+  data?: PickEvidencePackage;
+};
+
+function EvidencePanel({
+  pick,
+  simulation,
+}: {
+  pick: SimulatedPick;
+  simulation: Simulation;
+}) {
+  const [state, setState] = useState<EvidenceState>({ loading: false });
+  const [isOpen, setIsOpen] = useState(false);
+
+  async function handleLoadEvidence() {
+    if (state.data || state.loading) {
+      setIsOpen((value) => !value);
+      return;
+    }
+    setState({ loading: true });
+    try {
+      const evidence = await fetchPickEvidence(simulation, pick);
+      setState({ loading: false, data: evidence });
+      setIsOpen(true);
+    } catch (err) {
+      setState({
+        loading: false,
+        error: formatApiError(err, "加载证据包失败。"),
+      });
+      setIsOpen(true);
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-md border border-sky-300/20 bg-sky-300/[0.035] px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-sky-200">
+          Evidence 证据面板
+        </p>
+        <button
+          className="h-8 rounded-md border border-sky-300/40 bg-court-black px-3 text-[11px] font-black uppercase tracking-[0.12em] text-sky-100 transition hover:border-sky-300 hover:bg-sky-300/10 disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={state.loading}
+          onClick={handleLoadEvidence}
+          type="button"
+        >
+          {state.loading
+            ? "加载中..."
+            : state.data
+              ? isOpen
+                ? "隐藏证据"
+                : "查看证据"
+              : "查看证据"}
+        </button>
+      </div>
+      <p className="mt-1 text-[11px] leading-5 text-court-muted">
+        这些内容只用于解释当前已锁定的选择，不参与选人、评分或排序。
+      </p>
+
+      {isOpen && state.error ? (
+        <p className="mt-2 rounded-md border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-200">
+          {state.error}
+        </p>
+      ) : null}
+
+      {isOpen && state.data ? (
+        <EvidencePackageView evidence={state.data} />
+      ) : null}
+    </div>
+  );
+}
+
+function EvidencePackageView({ evidence }: { evidence: PickEvidencePackage }) {
+  const ranking = evidence.ranking_evidence;
+  const market = evidence.market_evidence;
+  const risk = evidence.risk_evidence;
+  const conflict = evidence.conflict_evidence;
+  const sufficiency = evidence.evidence_sufficiency;
+
+  return (
+    <div className="mt-3 grid gap-3 text-xs leading-5 text-court-muted">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="inline-flex items-center rounded-md border border-court-line/30 bg-court-line/10 px-2 py-1 text-[11px] font-black text-court-line">
+          决策已锁定
+        </span>
+        <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+          LLM 可改写决策：否
+        </span>
+        <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+          决策来源：{evidence.decision_source}
+        </span>
+      </div>
+
+      {ranking ? (
+        <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
+            Ranking Evidence
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {ranking.final_score !== undefined && ranking.final_score !== null ? (
+              <span className="inline-flex items-center rounded-md border border-court-line/30 bg-court-line/10 px-2 py-1 text-[11px] font-black text-court-line">
+                Final {ranking.final_score}
+              </span>
+            ) : null}
+            {ranking.prediction_sort_score !== undefined &&
+              ranking.prediction_sort_score !== null ? (
+              <span className="inline-flex items-center rounded-md border border-fuchsia-300/30 bg-fuchsia-300/10 px-2 py-1 text-[11px] font-black text-fuchsia-100">
+                预测辅助分 {ranking.prediction_sort_score}
+              </span>
+            ) : null}
+            {ranking.rank_in_available_pool !== undefined &&
+              ranking.rank_in_available_pool !== null ? (
+              <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+                候选池排名 #{ranking.rank_in_available_pool}
+              </span>
+            ) : null}
+            {ranking.score_gap_to_next !== undefined &&
+              ranking.score_gap_to_next !== null ? (
+              <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+                分差 {ranking.score_gap_to_next}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {market ? (
+        <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
+            Market Evidence
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {market.expected_pick !== undefined && market.expected_pick !== null ? (
+              <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+                市场预计 #{market.expected_pick}
+              </span>
+            ) : null}
+            {market.selected_pick !== undefined && market.selected_pick !== null ? (
+              <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+                实际选择 #{market.selected_pick}
+              </span>
+            ) : null}
+            {market.market_pick_delta !== undefined &&
+              market.market_pick_delta !== null ? (
+              <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+                偏差 {formatMarketDelta(market.market_pick_delta) ?? market.market_pick_delta}
+              </span>
+            ) : null}
+            {market.alignment_label ? (
+              <span className="inline-flex items-center rounded-md border border-court-line/30 bg-court-line/10 px-2 py-1 text-[11px] font-black text-court-line">
+                {marketAlignmentLabel(market.alignment_label)}
+              </span>
+            ) : null}
+          </div>
+          {market.alignment_notes && market.alignment_notes.length > 0 ? (
+            <p className="mt-2 text-[11px] leading-5 text-court-muted">
+              {market.alignment_notes[0]}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {risk && (risk.risk_flags?.length || risk.diagnostics_warnings?.length) ? (
+        <div className="rounded-md border border-amber-300/30 bg-amber-300/[0.07] p-3">
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-amber-200">
+            Risk Evidence
+          </p>
+          <ul className="mt-2 grid gap-1 text-[11px] font-bold leading-5 text-amber-100">
+            {(risk.risk_flags ?? []).map((flag, index) => (
+              <li key={`flag-${index}`}>· {flag}</li>
+            ))}
+            {(risk.diagnostics_warnings ?? []).map((warning, index) => (
+              <li key={`warn-${index}`}>· {warning}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {conflict && (conflict.market_delta_conflict || conflict.notes?.length) ? (
+        <div className="rounded-md border border-red-300/30 bg-red-300/[0.07] p-3">
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-red-200">
+            Conflict Evidence
+          </p>
+          <ul className="mt-2 grid gap-1 text-[11px] font-bold leading-5 text-red-100">
+            {conflict.market_delta_conflict ? (
+              <li>· 市场顺位偏差触发冲突阈值</li>
+            ) : null}
+            {(conflict.notes ?? []).map((note, index) => (
+              <li key={`conflict-${index}`}>· {note}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {sufficiency ? (
+        <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
+            Evidence Sufficiency
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {sufficiency.level ? (
+              <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
+                等级 {sufficiency.level}
+              </span>
+            ) : null}
+            {sufficiency.missing_fields && sufficiency.missing_fields.length > 0 ? (
+              <span className="inline-flex items-center rounded-md border border-amber-300/30 bg-amber-300/10 px-2 py-1 text-[11px] font-bold text-amber-100">
+                缺失字段 {sufficiency.missing_fields.length}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      <RetrievedEvidenceList items={evidence.retrieved_evidence} />
+      <CitationList citations={evidence.citations} />
+    </div>
+  );
+}
+
+function RetrievedEvidenceList({ items }: { items: RetrievedEvidence[] }) {
+  if (items.length === 0) {
+    return (
+      <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
+        <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
+          Retrieved Evidence
+        </p>
+        <p className="mt-2 text-[11px] leading-5 text-court-muted">
+          暂无人工备注或外部检索证据；当前仅展示结构化证据。
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
+      <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
+        Retrieved Evidence
+      </p>
+      <div className="mt-2 grid gap-2">
+        {items.map((item, index) => {
+          const isManualNote = item.source_type === "manual_note";
+          return (
+            <div
+              className="rounded-md border border-white/10 bg-white/[0.025] p-2"
+              key={`retrieved-${index}`}
+            >
+              <div className="flex flex-wrap items-center gap-1.5">
+                {isManualNote ? (
+                  <span className="inline-flex items-center rounded-md border border-fuchsia-300/40 bg-fuchsia-300/10 px-2 py-0.5 text-[10px] font-black text-fuchsia-100">
+                    人工备注｜只读证据，不参与评分
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-court-text">
+                    {item.source_type}
+                  </span>
+                )}
+                {item.confidence !== undefined && item.confidence !== null ? (
+                  <span className="text-[10px] font-bold text-court-muted">
+                    可信度 {Math.round(item.confidence * 100)}%
+                  </span>
+                ) : null}
+                {item.date ? (
+                  <span className="text-[10px] font-bold text-court-muted">
+                    {item.date}
+                  </span>
+                ) : null}
+              </div>
+              {item.title ? (
+                <p className="mt-1 text-[11px] font-black text-court-text">
+                  {item.title}
+                </p>
+              ) : null}
+              <p className="mt-1 text-[11px] leading-5 text-court-muted">
+                {item.excerpt}
+              </p>
+              {item.relevance_reason ? (
+                <p className="mt-1 text-[10px] leading-4 text-court-muted/80">
+                  相关性：{item.relevance_reason}
+                </p>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CitationList({ citations }: { citations: EvidenceCitation[] }) {
+  if (citations.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
+      <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
+        Citations
+      </p>
+      <div className="mt-2 grid gap-1.5">
+        {citations.map((citation, index) => {
+          const isManualNote =
+            citation.evidence_source_type === "manual_note";
+          return (
+            <div
+              className="flex flex-wrap items-center gap-1.5 text-[10px] font-bold"
+              key={`citation-${index}`}
+            >
+              {isManualNote ? (
+                <span className="inline-flex items-center rounded-md border border-fuchsia-300/40 bg-fuchsia-300/10 px-2 py-0.5 text-[10px] font-black text-fuchsia-100">
+                  人工备注｜只读证据，不参与评分
+                </span>
+              ) : (
+                <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-court-text">
+                  {citation.evidence_source_type ?? citation.source_type ?? "source"}
+                </span>
+              )}
+              {citation.title ? (
+                <span className="text-court-text">{citation.title}</span>
+              ) : null}
+              {citation.author ? (
+                <span className="text-court-muted">· {citation.author}</span>
+              ) : null}
+              {citation.date ? (
+                <span className="text-court-muted">· {citation.date}</span>
+              ) : null}
+              {citation.url ? (
+                <a
+                  className="text-sky-200 underline-offset-2 hover:underline"
+                  href={citation.url}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  来源
+                </a>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }

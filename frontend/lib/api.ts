@@ -385,3 +385,118 @@ export function refreshNews(limit = 8): Promise<NewsSearchResponse> {
     method: "POST",
   });
 }
+
+// RAG-v0-M2.9: Evidence Layer read-only display types.
+// These mirror backend/app/schemas/evidence.py.  Fields are intentionally
+// permissive (nullable / optional) so the frontend does not break when the
+// backend adds new evidence sub-blocks.  ManualNote is never edited in the
+// frontend in this milestone — manual_notes is always sent as [].
+
+export type EvidenceCitation = {
+  source_type?: string | null;
+  source_id?: string | null;
+  title?: string | null;
+  url?: string | null;
+  date?: string | null;
+  excerpt?: string | null;
+  confidence?: number | null;
+  evidence_source_type?: string | null;
+  entity_type?: string | null;
+  entity_id?: number | string | null;
+  author?: string | null;
+  retrieved_at?: string | null;
+  freshness_days?: number | null;
+  relevance_reason?: string | null;
+  evidence_only?: true;
+};
+
+export type RetrievedEvidence = {
+  source_type: string;
+  source_id?: string | null;
+  citation?: EvidenceCitation | null;
+  entity_type?: string | null;
+  entity_id?: number | string | null;
+  title?: string | null;
+  excerpt: string;
+  url?: string | null;
+  date?: string | null;
+  confidence?: number | null;
+  retrieval_score?: number | null;
+  freshness_days?: number | null;
+  relevance_reason?: string | null;
+  conflict_note?: string | null;
+  evidence_only?: true;
+};
+
+// Evidence sub-blocks are displayed read-only; we keep them as loose records
+// so the frontend tolerates backend field additions without a rebuild.
+export type RankingEvidence = {
+  final_score?: number | null;
+  prediction_sort_score?: number | null;
+  rank_in_available_pool?: number | null;
+  score_gap_to_next?: number | null;
+  [key: string]: unknown;
+};
+
+export type MarketEvidence = {
+  expected_pick?: number | null;
+  selected_pick?: number | null;
+  market_pick_delta?: number | null;
+  alignment_label?: string | null;
+  alignment_notes?: string[] | null;
+  [key: string]: unknown;
+};
+
+export type RiskEvidence = {
+  risk_flags?: string[] | null;
+  diagnostics_warnings?: string[] | null;
+  [key: string]: unknown;
+};
+
+export type ConflictEvidence = {
+  market_delta_conflict?: boolean | null;
+  notes?: string[] | null;
+  [key: string]: unknown;
+};
+
+export type EvidenceSufficiency = {
+  level?: string | null;
+  missing_fields?: string[] | null;
+  [key: string]: unknown;
+};
+
+export type PickEvidencePackage = {
+  pick_number: number;
+  team_abbr: string;
+  selected_player_id: number;
+  selected_player_name: string;
+  decision_locked: true;
+  decision_source: string;
+  llm_can_modify_decision: false;
+  ranking_evidence?: RankingEvidence | null;
+  team_fit_evidence?: Record<string, unknown> | null;
+  market_evidence?: MarketEvidence | null;
+  risk_evidence?: RiskEvidence | null;
+  conflict_evidence?: ConflictEvidence | null;
+  evidence_sufficiency?: EvidenceSufficiency | null;
+  retrieved_evidence: RetrievedEvidence[];
+  citations: EvidenceCitation[];
+};
+
+// RAG-v0-M2.9: fetch a read-only evidence package for a single pick.
+// manual_notes is always [] in this milestone — the frontend does not edit
+// manual notes.  The evidence package is display-only and never feeds back
+// into ranking / scoring / selection.
+export function fetchPickEvidence(
+  simulation: Simulation,
+  pick: SimulatedPick,
+): Promise<PickEvidencePackage> {
+  return request<PickEvidencePackage>("/api/evidence/pick", {
+    method: "POST",
+    body: JSON.stringify({
+      simulation,
+      pick,
+      manual_notes: [],
+    }),
+  });
+}
