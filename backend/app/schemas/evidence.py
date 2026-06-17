@@ -98,6 +98,43 @@ class RetrievedEvidence(BaseModel):
     evidence_only: Literal[True] = True
 
 
+class ManualNote(BaseModel):
+    note_id: int | str | None = None
+    year: int = Field(ge=1900, le=2100)
+
+    entity_type: Literal[
+        "prospect",
+        "team",
+        "pick",
+        "market_projection",
+        "scouting_profile",
+        "news_article",
+        "simulation_context",
+    ]
+    entity_id: int | str | None = None
+
+    prospect_id: int | None = None
+    team_id: int | None = None
+    pick_no: int | None = Field(default=None, ge=1, le=60)
+
+    title: str = Field(min_length=1, max_length=240)
+    body: str = Field(min_length=1, max_length=8000)
+    summary: str | None = Field(default=None, max_length=500)
+
+    source: str = Field(default="manual", min_length=1, max_length=80)
+    author: str | None = Field(default=None, max_length=120)
+    source_url: str | None = None
+    source_date: str | None = None
+
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    tags: list[str] = Field(default_factory=list)
+    relevance_reason: str | None = Field(default=None, max_length=500)
+
+    evidence_only: Literal[True] = True
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
 class PickEvidencePackage(BaseModel):
     pick_number: int = Field(ge=1, le=60)
     team_abbr: str | None = None

@@ -5,6 +5,7 @@ from app.schemas.evidence import (
     ConflictEvidence,
     EvidenceCitation,
     EvidenceSufficiency,
+    ManualNote,
     MarketEvidence,
     PickEvidencePackage,
     RankingEvidence,
@@ -340,3 +341,210 @@ def test_retrieved_evidence_does_not_expose_scoring_or_replacement_fields() -> N
     }
 
     assert forbidden_fields.isdisjoint(RetrievedEvidence.model_fields)
+
+
+def test_manual_note_can_be_created() -> None:
+    note = ManualNote(
+        year=2026,
+        entity_type="prospect",
+        entity_id=101,
+        prospect_id=101,
+        title="Workout observation",
+        body="The player showed advanced passing feel in transition.",
+        summary="Passing feel note.",
+        author="Analyst Name",
+        source_url="https://example.test/note/101",
+        source_date="2026-06-16",
+        confidence=0.8,
+        tags=["passing", "transition"],
+        relevance_reason="Explains a selected player's creation upside.",
+    )
+
+    dumped = note.model_dump()
+
+    assert dumped["year"] == 2026
+    assert dumped["entity_type"] == "prospect"
+    assert dumped["entity_id"] == 101
+    assert dumped["prospect_id"] == 101
+    assert dumped["title"] == "Workout observation"
+    assert dumped["body"] == "The player showed advanced passing feel in transition."
+    assert dumped["source"] == "manual"
+    assert dumped["confidence"] == 0.8
+    assert dumped["tags"] == ["passing", "transition"]
+    assert dumped["evidence_only"] is True
+
+
+def test_manual_note_rejects_year_below_range() -> None:
+    with pytest.raises(ValidationError):
+        ManualNote(
+            year=1899,
+            entity_type="prospect",
+            title="Title",
+            body="Body",
+        )
+
+
+def test_manual_note_rejects_year_above_range() -> None:
+    with pytest.raises(ValidationError):
+        ManualNote(
+            year=2101,
+            entity_type="prospect",
+            title="Title",
+            body="Body",
+        )
+
+
+def test_manual_note_entity_type_only_allows_enum_values() -> None:
+    allowed = {
+        "prospect",
+        "team",
+        "pick",
+        "market_projection",
+        "scouting_profile",
+        "news_article",
+        "simulation_context",
+    }
+    assert set(ManualNote.model_fields["entity_type"].annotation.__args__) == allowed
+
+    with pytest.raises(ValidationError):
+        ManualNote(
+            year=2026,
+            entity_type="unknown_entity",
+            title="Title",
+            body="Body",
+        )
+
+
+def test_manual_note_title_is_required_and_cannot_be_empty() -> None:
+    with pytest.raises(ValidationError):
+        ManualNote(year=2026, entity_type="prospect", title="", body="Body")
+
+    with pytest.raises(ValidationError):
+        ManualNote(year=2026, entity_type="prospect", body="Body")
+
+
+def test_manual_note_body_is_required_and_cannot_be_empty() -> None:
+    with pytest.raises(ValidationError):
+        ManualNote(year=2026, entity_type="prospect", title="Title", body="")
+
+    with pytest.raises(ValidationError):
+        ManualNote(year=2026, entity_type="prospect", title="Title")
+
+
+def test_manual_note_body_rejects_max_length_overflow() -> None:
+    with pytest.raises(ValidationError):
+        ManualNote(
+            year=2026,
+            entity_type="prospect",
+            title="Title",
+            body="x" * 8001,
+        )
+
+
+def test_manual_note_confidence_must_be_within_zero_to_one() -> None:
+    with pytest.raises(ValidationError):
+        ManualNote(
+            year=2026,
+            entity_type="prospect",
+            title="Title",
+            body="Body",
+            confidence=1.01,
+        )
+
+    with pytest.raises(ValidationError):
+        ManualNote(
+            year=2026,
+            entity_type="prospect",
+            title="Title",
+            body="Body",
+            confidence=-0.01,
+        )
+
+
+def test_manual_note_pick_no_must_be_within_one_to_sixty() -> None:
+    with pytest.raises(ValidationError):
+        ManualNote(
+            year=2026,
+            entity_type="pick",
+            title="Title",
+            body="Body",
+            pick_no=0,
+        )
+
+    with pytest.raises(ValidationError):
+        ManualNote(
+            year=2026,
+            entity_type="pick",
+            title="Title",
+            body="Body",
+            pick_no=61,
+        )
+
+
+def test_manual_note_evidence_only_defaults_to_true_and_rejects_false() -> None:
+    note = ManualNote(
+        year=2026,
+        entity_type="prospect",
+        title="Title",
+        body="Body",
+    )
+
+    assert note.evidence_only is True
+
+    with pytest.raises(ValidationError):
+        ManualNote(
+            year=2026,
+            entity_type="prospect",
+            title="Title",
+            body="Body",
+            evidence_only=False,
+        )
+
+
+def test_manual_note_tags_default_list_is_not_shared_between_instances() -> None:
+    first = ManualNote(
+        year=2026,
+        entity_type="prospect",
+        title="First Note",
+        body="Body",
+    )
+    second = ManualNote(
+        year=2026,
+        entity_type="prospect",
+        title="Second Note",
+        body="Body",
+    )
+
+    first.tags.append("passing")
+
+    assert first.tags == ["passing"]
+    assert second.tags == []
+    assert first.tags is not second.tags
+
+
+def test_manual_note_does_not_expose_scoring_or_replacement_or_override_fields() -> None:
+    forbidden_fields = {
+        "recommended_player",
+        "replacement_player",
+        "new_selected_player",
+        "rerank_score",
+        "new_score",
+        "score_adjustment",
+        "ranking_weight",
+        "selection_override",
+        "final_score_delta",
+        "prediction_sort_delta",
+    }
+
+    assert forbidden_fields.isdisjoint(ManualNote.model_fields)
+
+
+def test_manual_note_source_defaults_to_manual() -> None:
+    note = ManualNote(
+        year=2026,
+        entity_type="prospect",
+        title="Title",
+        body="Body",
+    )
+
+    assert note.source == "manual"
