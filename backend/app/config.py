@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     tencent_secret_id: str = ""
     tencent_secret_key: str = ""
 
+    # ---- Evidence Explanation LLM (RAG-v0-M3.1-D) ----
+    # Real LLM explanation is OFF by default.  Even if llm_api_key is present,
+    # the evidence explanation provider adapter will NOT be created unless this
+    # flag is explicitly set to True.  This is the hard safety boundary.
+    enable_real_llm_explanation: bool = False
+    llm_explanation_timeout: float = 10.0
+    llm_explanation_max_tokens: int = 900
+    llm_explanation_temperature: float = 0.0
+
     # ---- News ingestion ----
     news_user_agent: str = "Mozilla/5.0 DraftMind/0.1 (Chinese)"
     news_refresh_minutes: int = 60
