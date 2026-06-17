@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.simulation import SimulateResponse, SimulatedPickRead
 
@@ -159,3 +159,42 @@ class PickEvidenceRequest(BaseModel):
     simulation: SimulateResponse
     pick: SimulatedPickRead
     manual_notes: list[ManualNote] = Field(default_factory=list, max_length=10)
+
+
+# RAG-v0-M3.0-A: PickExplanation schema.
+#
+# This schema is the *only* shape an LLM is allowed to emit when explaining a
+# pick.  It is deliberately display-only:
+#
+# - ``decision_locked`` / ``llm_can_modify_decision`` are Literal-locked so the
+#   LLM cannot express "I changed the pick" in a type-carrying way.
+# - There are no fields for replacement players, reranking, score overrides, or
+#   selection overrides.  ``citation_refs`` may only reference existing
+#   citations; the LLM cannot invent new evidence.
+# - ``summary`` / ``key_reasons`` / ``market_context`` / ``risk_summary`` /
+#   ``evidence_notes`` / ``limitations`` are bounded by max_length so the LLM
+#   cannot smuggle a full alternative draft board through free text.
+
+
+class PickExplanation(BaseModel):
+    # RAG-v0-M3.0-A: extra="forbid" ensures any unknown field — including any
+    # dangerous override / rerank / replacement field — raises ValidationError
+    # instead of being silently ignored.  This is the strict boundary for LLM
+    # output: the model may only emit the fields listed below.
+    model_config = ConfigDict(extra="forbid")
+
+    pick_number: int = Field(ge=1, le=60)
+    team_abbr: str | None = None
+    selected_player_id: int | None = None
+    selected_player_name: str
+
+    decision_locked: Literal[True] = True
+    llm_can_modify_decision: Literal[False] = False
+
+    summary: str = Field(min_length=1, max_length=1200)
+    key_reasons: list[str] = Field(default_factory=list, max_length=5)
+    market_context: str | None = Field(default=None, max_length=800)
+    risk_summary: str | None = Field(default=None, max_length=800)
+    evidence_notes: list[str] = Field(default_factory=list, max_length=6)
+    citation_refs: list[str] = Field(default_factory=list, max_length=10)
+    limitations: list[str] = Field(default_factory=list, max_length=5)
