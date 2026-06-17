@@ -482,7 +482,37 @@ LLM_API_BASE=https://api.hunyuan.tencent.com/v1
 
 ---
 
-## 12. 致谢 / 引用
+## 12. RAG-v0 Explanation Safety
+
+RAG-v0 explanation 后端安全闭环已完成。当前链路：
+
+```text
+PickEvidencePackage
+  -> PickExplanation schema (extra="forbid", decision_locked=True)
+  -> evidence_prompt_contract
+  -> build_mock_pick_explanation (deterministic)
+  -> POST /api/evidence/pick/explanation/mock
+  -> build_llm_pick_explanation (guarded shell)
+  -> build_evidence_llm_client (provider adapter)
+  -> POST /api/evidence/pick/explanation (默认 provider 关闭)
+```
+
+**核心保证**：
+
+- **LLM 只解释，不参与选人**。`ranking_engine` / `prediction_calibration` / `simulation_service` 才是选人系统；LLM 永远不能修改 `selected_player` / `final_score` / `prediction_sort_score`。
+- **real endpoint 默认关闭真实 provider**（`enable_real_llm_explanation=False`）。provider disabled / no key / timeout / invalid output / unsafe output 都 fallback 到 deterministic mock。
+- **决策边界锁定**：`PickExplanation` 使用 `extra="forbid"` + `decision_locked: Literal[True]` + `llm_can_modify_decision: Literal[False]`，禁止任何决策字段泄漏。
+- **危险输出整体 fallback**：真实 LLM 输出命中禁用字段（如 `replacement_player`）或危险短语（如 "建议改选"）时，不 sanitize 后继续使用，而是整体 fallback mock。
+- **ManualNote evidence-only**：`ManualNote` 只能进入 `retrieved_evidence` / `citations`，标注 `evidence_only`，不参与评分。
+- **Citation 不能编造**：`citation_refs` 只能引用输入 `PickEvidencePackage.citations` 中已有的 `source_id` / `title` / `url`。
+
+完整安全说明（链路总览、fallback 行为表、禁用字段/危险语义清单、日志规则、测试清单、未来工作建议）见：
+
+👉 [backend/docs/rag_v0_explanation_safety.md](backend/docs/rag_v0_explanation_safety.md)
+
+---
+
+## 13. 致谢 / 引用
 
 - `nba_api` 用于拉取 NBA.com roster。
 - `balldontlie` 免费层用于 standings / 球员数据。
@@ -493,6 +523,6 @@ LLM_API_BASE=https://api.hunyuan.tencent.com/v1
 
 ---
 
-## 13. License
+## 14. License
 
 MIT planned. A formal LICENSE file can be added before public release.
