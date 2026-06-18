@@ -9,8 +9,10 @@ Design rules enforced here and covered by
 ``test_evidence_llm_explanation_service.py``:
 
 1. ``llm_client is None`` → fallback to mock immediately (no network).
-2. LLM input is ONLY ``PickEvidencePackage.model_dump()`` — no
-   ``candidate_board``, ``alternatives``, ``simulation``, DB, or ranking data.
+2. LLM input is a whitelist payload built by ``_build_llm_explanation_payload``
+   — NOT the full ``evidence.model_dump()``.  Only explanation-relevant fields
+   are included; long excerpts are truncated; internal metadata (entity_id,
+   retrieval_score, freshness_days, nested citation, etc.) is excluded.
 3. LLM output must parse as JSON and pass ``PickExplanation.model_validate``.
    Because ``PickExplanation`` uses ``extra="forbid"``, any dangerous extra
    field (``replacement_player``, ``rerank_score``, ...) triggers validation
@@ -29,6 +31,15 @@ Design rules enforced here and covered by
 7. No real LLM provider is imported.  No ``openai`` / ``httpx`` / ``requests``
    / ``socket``.  No DB.  No ranking_engine / prediction_calibration /
    simulation_service.  No env vars.  No mutation of the input evidence.
+
+RAG-v1-D3-B additions:
+- ``_build_llm_explanation_payload`` replaces ``evidence.model_dump()`` so the
+  LLM only sees a whitelist of explanation-safe fields.
+- ``manual_note`` entries still enter the payload (in ``retrieved_evidence``
+  and ``citations``) but carry ``evidence_only=True`` and are covered by the
+  strengthened prompt contract.
+- Long excerpts are truncated to ``LLM_EXCERPT_MAX_CHARS`` to bound prompt
+  size and prevent prompt-stuffing via oversized note bodies.
 """
 
 from __future__ import annotations
@@ -36,7 +47,12 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
-from app.schemas.evidence import PickEvidencePackage, PickExplanation
+from app.schemas.evidence import (
+    EvidenceCitation,
+    PickEvidencePackage,
+    PickExplanation,
+    RetrievedEvidence,
+)
 from app.services.evidence_explanation_service import (
     FORBIDDEN_PHRASES,
     build_mock_pick_explanation,
@@ -87,6 +103,135 @@ FORBIDDEN_FIELDS: frozenset[str] = frozenset(
 
 
 # ---------------------------------------------------------------------------
+# RAG-v1-D3-B: LLM payload whitelist + excerpt truncation
+# ---------------------------------------------------------------------------
+
+# Maximum character length for any ``excerpt`` field sent to the LLM.
+# Long manual_note bodies can be up to 8000 chars; truncating keeps the prompt
+# bounded and prevents prompt-stuffing.
+LLM_EXCERPT_MAX_CHARS: int = 500
+
+
+def _truncate_excerpt(excerpt: str | None) -> str | None:
+    """Truncate an excerpt to ``LLM_EXCERPT_MAX_CHARS``.
+
+    Returns ``None`` unchanged.  Short excerpts are returned verbatim.  Long
+    excerpts are cut to the limit and suffixed with ``"..."`` so the LLM can
+    tell the text was truncated.
+    """
+    if excerpt is None:
+        return None
+    if len(excerpt) <= LLM_EXCERPT_MAX_CHARS:
+        return excerpt
+    return excerpt[: LLM_EXCERPT_MAX_CHARS - 3] + "..."
+
+
+def _whitelist_citation(citation: EvidenceCitation) -> dict[str, Any]:
+    """Project an ``EvidenceCitation`` onto the explanation-safe whitelist.
+
+    Excludes internal metadata (``publisher``, ``retrieved_at``,
+    ``freshness_days``, ``entity_id``) that the LLM does not need.
+    """
+    return {
+        "source_type": citation.source_type,
+        "source_id": citation.source_id,
+        "title": citation.title,
+        "url": citation.url,
+        "date": citation.date,
+        "excerpt": _truncate_excerpt(citation.excerpt),
+        "confidence": citation.confidence,
+        "evidence_source_type": citation.evidence_source_type,
+        "entity_type": citation.entity_type,
+        "author": citation.author,
+        "relevance_reason": citation.relevance_reason,
+        "evidence_only": citation.evidence_only,
+    }
+
+
+def _whitelist_retrieved_evidence(item: RetrievedEvidence) -> dict[str, Any]:
+    """Project a ``RetrievedEvidence`` onto the explanation-safe whitelist.
+
+    Excludes the nested ``citation`` (redundant with the top-level
+    ``citations`` list), ``entity_id``, ``retrieval_score``,
+    ``freshness_days``, and ``conflict_note``.
+    """
+    return {
+        "source_type": item.source_type,
+        "source_id": item.source_id,
+        "entity_type": item.entity_type,
+        "title": item.title,
+        "excerpt": _truncate_excerpt(item.excerpt),
+        "url": item.url,
+        "date": item.date,
+        "confidence": item.confidence,
+        "relevance_reason": item.relevance_reason,
+        "evidence_only": item.evidence_only,
+    }
+
+
+def _build_llm_explanation_payload(evidence: PickEvidencePackage) -> dict[str, Any]:
+    """Build a whitelist payload for the LLM explanation prompt.
+
+    RAG-v1-D3-B: replaces the previous ``evidence.model_dump()`` call so the
+    LLM only receives explanation-relevant fields.  This is defense in depth
+    — even if the schema later grows dangerous fields, the whitelist will not
+    accidentally include them.
+
+    The payload includes:
+    - identity fields (pick_number, team_abbr, selected_player_*)
+    - decision locks (decision_locked, decision_source, llm_can_modify_decision)
+    - ranking_evidence / team_fit_evidence / market_evidence / risk_evidence /
+      conflict_evidence / evidence_sufficiency (all fields, all read-only)
+    - citations (whitelist, excerpt truncated)
+    - retrieved_evidence (whitelist, excerpt truncated — manual_note lives here)
+    - narrative_explanation (if present)
+
+    The payload excludes (by omission):
+    - candidate_board / alternatives / simulation / replacement_player /
+      score_adjustment / selection_override (not in schema; regression guard)
+    - citation nested object inside retrieved_evidence (redundant)
+    - entity_id / retrieval_score / freshness_days / conflict_note /
+      publisher / retrieved_at (internal metadata)
+
+    This function does NOT mutate the original ``PickEvidencePackage``.
+    """
+    payload: dict[str, Any] = {
+        "pick_number": evidence.pick_number,
+        "team_abbr": evidence.team_abbr,
+        "selected_player_id": evidence.selected_player_id,
+        "selected_player_name": evidence.selected_player_name,
+        "decision_locked": evidence.decision_locked,
+        "decision_source": evidence.decision_source,
+        "llm_can_modify_decision": evidence.llm_can_modify_decision,
+    }
+
+    if evidence.ranking_evidence is not None:
+        payload["ranking_evidence"] = evidence.ranking_evidence.model_dump()
+    if evidence.team_fit_evidence is not None:
+        payload["team_fit_evidence"] = evidence.team_fit_evidence.model_dump()
+    if evidence.market_evidence is not None:
+        payload["market_evidence"] = evidence.market_evidence.model_dump()
+    if evidence.risk_evidence is not None:
+        payload["risk_evidence"] = evidence.risk_evidence.model_dump()
+
+    payload["conflict_evidence"] = [
+        c.model_dump() for c in evidence.conflict_evidence
+    ]
+    payload["evidence_sufficiency"] = evidence.evidence_sufficiency.model_dump()
+    payload["citations"] = [
+        _whitelist_citation(c) for c in evidence.citations
+    ]
+    payload["retrieved_evidence"] = [
+        _whitelist_retrieved_evidence(r) for r in evidence.retrieved_evidence
+    ]
+
+    if evidence.narrative_explanation is not None:
+        payload["narrative_explanation"] = evidence.narrative_explanation
+
+    return payload
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -101,7 +246,8 @@ def build_llm_pick_explanation(
       explanation (no network, no provider).
     - If ``llm_client`` is provided, the shell:
         1. Builds the prompt contract messages.
-        2. Sends ONLY ``evidence.model_dump()`` as the user payload.
+        2. Sends ONLY the whitelist payload (``_build_llm_explanation_payload``)
+           as the user payload — never the full ``evidence.model_dump()``.
         3. Parses the LLM response as JSON.
         4. Validates via ``PickExplanation.model_validate`` (extra="forbid").
         5. Runs a second safety pass (identity, decision locks, citations,
@@ -148,17 +294,19 @@ def build_llm_pick_explanation(
 def _call_llm(llm_client: object, evidence: PickEvidencePackage) -> str:
     """Build messages from the prompt contract and call the LLM.
 
-    The user message contains ONLY ``evidence.model_dump()`` — no
-    ``candidate_board``, ``alternatives``, ``simulation``, DB, or ranking
+    RAG-v1-D3-B: the user message contains ONLY the whitelist payload built
+    by ``_build_llm_explanation_payload`` — NOT ``evidence.model_dump()``.
+    No ``candidate_board``, ``alternatives``, ``simulation``, DB, or ranking
     data is attached.
     """
     contract = build_pick_explanation_prompt_contract()
+    payload = _build_llm_explanation_payload(evidence)
     messages: list[dict[str, str]] = [
         {"role": "system", "content": contract["system"]},
         {"role": "developer", "content": contract["developer"]},
         {
             "role": "user",
-            "content": json.dumps(evidence.model_dump(), ensure_ascii=False),
+            "content": json.dumps(payload, ensure_ascii=False),
         },
     ]
     # The client is expected to satisfy the LLMClient protocol.
