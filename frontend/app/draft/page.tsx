@@ -263,6 +263,29 @@ function formatCitationTitle(citation: EvidenceCitation): string {
   return citation.title ?? "参考来源";
 }
 
+// RAG-v1-D2-A: ManualNote entity_type display labels.
+// ManualNote records carry an entity_type that describes what the note is
+// about (prospect / team / pick / prospect_team combo).  This helper maps
+// the raw backend string to a short Chinese label for the evidence panel.
+// Unknown values fall back to the raw string so future entity types do not
+// break the UI.
+function formatManualNoteEntityType(entityType: string | null | undefined): string | null {
+  if (!entityType) {
+    return null;
+  }
+  const labels: Record<string, string> = {
+    prospect: "球员备注",
+    team: "球队备注",
+    pick: "顺位备注",
+    prospect_team: "球员+球队备注",
+    market_projection: "行情备注",
+    scouting_profile: "球探画像备注",
+    news_article: "新闻备注",
+    simulation_context: "模拟上下文备注",
+  };
+  return labels[entityType] ?? entityType;
+}
+
 function marketAlignmentLabel(label: string): string {
   const labels: Record<string, string> = {
     高于市场: "比行情预测更早被选",
@@ -2603,14 +2626,31 @@ function RetrievedEvidenceList({ items }: { items: RetrievedEvidence[] }) {
     );
   }
 
+  // RAG-v1-D2-A: count manual_note items so the panel can surface a
+  // read-only summary of how many persisted manual notes were attached.
+  // The frontend never writes manual notes — any manual_note here was
+  // retrieved server-side from the manual_notes table.
+  const manualNoteCount = items.filter(
+    (item) => item.source_type === "manual_note",
+  ).length;
+
   return (
     <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
-      <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
-        补充证据
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
+          补充证据
+        </p>
+        {manualNoteCount > 0 ? (
+          <span className="text-[10px] font-bold text-court-muted">
+            含 {manualNoteCount} 条手工证据 · 仅用于解释
+          </span>
+        ) : null}
+      </div>
       <div className="mt-2 grid gap-2">
         {items.map((item, index) => {
           const isManualNote = item.source_type === "manual_note";
+          const entityTypeLabel = formatManualNoteEntityType(item.entity_type);
+          const author = item.citation?.author ?? null;
           return (
             <div
               className="rounded-md border border-white/10 bg-white/[0.025] p-2"
@@ -2618,14 +2658,27 @@ function RetrievedEvidenceList({ items }: { items: RetrievedEvidence[] }) {
             >
               <div className="flex flex-wrap items-center gap-1.5">
                 {isManualNote ? (
-                  <span className="inline-flex items-center rounded-md border border-court-line/35 bg-court-line/10 px-2 py-0.5 text-[10px] font-black text-court-line">
-                    人工备注｜只读证据，不参与评分
-                  </span>
+                  <>
+                    <span className="inline-flex items-center rounded-md border border-court-line/35 bg-court-line/10 px-2 py-0.5 text-[10px] font-black text-court-line">
+                      手工证据
+                    </span>
+                    <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-court-text">
+                      仅用于解释
+                    </span>
+                    <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-court-muted">
+                      已持久化
+                    </span>
+                  </>
                 ) : (
                   <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-court-text">
                     {formatEvidenceSourceLabel(item.source_type)}
                   </span>
                 )}
+                {entityTypeLabel && isManualNote ? (
+                  <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-court-text">
+                    {entityTypeLabel}
+                  </span>
+                ) : null}
                 {item.confidence !== undefined && item.confidence !== null ? (
                   <span className="text-[10px] font-bold text-court-muted">
                     可信度 {Math.round(item.confidence * 100)}%
@@ -2650,6 +2703,17 @@ function RetrievedEvidenceList({ items }: { items: RetrievedEvidence[] }) {
                   相关性：{item.relevance_reason}
                 </p>
               ) : null}
+              {isManualNote ? (
+                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-bold text-court-muted/70">
+                  {item.source_id ? (
+                    <span>参考编号：{item.source_id}</span>
+                  ) : null}
+                  {author ? (
+                    <span>作者：{author}</span>
+                  ) : null}
+                  <span className="text-court-muted/60">不参与选人</span>
+                </div>
+              ) : null}
             </div>
           );
         })}
@@ -2663,17 +2727,30 @@ function CitationList({ citations }: { citations: EvidenceCitation[] }) {
     return null;
   }
 
+  // RAG-v1-D2-A: count manual_note citations for a read-only summary.
+  const manualNoteCitationCount = citations.filter(
+    (citation) => citation.evidence_source_type === "manual_note",
+  ).length;
+
   return (
     <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
-      <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
-        参考来源
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
+          参考来源
+        </p>
+        {manualNoteCitationCount > 0 ? (
+          <span className="text-[10px] font-bold text-court-muted">
+            含 {manualNoteCitationCount} 条手工证据引用 · 仅用于解释
+          </span>
+        ) : null}
+      </div>
       <div className="mt-2 grid gap-2">
         {citations.map((citation, index) => {
           const isManualNote =
             citation.evidence_source_type === "manual_note";
           const title = formatCitationTitle(citation);
           const sourceId = citation.source_id;
+          const entityTypeLabel = formatManualNoteEntityType(citation.entity_type);
           return (
             <div
               className="flex flex-col gap-0.5 text-[11px] leading-5"
@@ -2681,11 +2758,24 @@ function CitationList({ citations }: { citations: EvidenceCitation[] }) {
             >
               <div className="flex flex-wrap items-center gap-1.5">
                 {isManualNote ? (
-                  <span className="inline-flex items-center rounded-md border border-court-line/35 bg-court-line/10 px-2 py-0.5 text-[10px] font-black text-court-line">
-                    人工备注｜只读证据，不参与评分
-                  </span>
+                  <>
+                    <span className="inline-flex items-center rounded-md border border-court-line/35 bg-court-line/10 px-2 py-0.5 text-[10px] font-black text-court-line">
+                      手工证据
+                    </span>
+                    <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-court-text">
+                      仅用于解释
+                    </span>
+                    <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-court-muted">
+                      已持久化
+                    </span>
+                  </>
                 ) : null}
                 <span className="font-black text-court-text">{title}</span>
+                {entityTypeLabel && isManualNote ? (
+                  <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-court-text">
+                    {entityTypeLabel}
+                  </span>
+                ) : null}
                 {citation.url ? (
                   <a
                     className="text-sky-200 underline-offset-2 hover:underline"
@@ -2710,6 +2800,26 @@ function CitationList({ citations }: { citations: EvidenceCitation[] }) {
               {citation.author || citation.date ? (
                 <span className="text-[10px] font-bold text-court-muted/70">
                   {[citation.author, citation.date].filter(Boolean).join(" · ")}
+                </span>
+              ) : null}
+              {isManualNote && citation.confidence !== undefined && citation.confidence !== null ? (
+                <span className="text-[10px] font-bold text-court-muted/70">
+                  可信度 {Math.round(citation.confidence * 100)}%
+                </span>
+              ) : null}
+              {isManualNote && citation.relevance_reason ? (
+                <span className="text-[10px] font-bold text-court-muted/70">
+                  相关性：{citation.relevance_reason}
+                </span>
+              ) : null}
+              {isManualNote && citation.excerpt ? (
+                <span className="text-[10px] leading-4 text-court-muted/60">
+                  摘要：{citation.excerpt}
+                </span>
+              ) : null}
+              {isManualNote ? (
+                <span className="text-[10px] font-bold text-court-muted/60">
+                  不参与选人
                 </span>
               ) : null}
             </div>
