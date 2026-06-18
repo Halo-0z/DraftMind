@@ -1,12 +1,12 @@
 export default function Home() {
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_70%_20%,rgba(163,255,36,0.14),transparent_30%),linear-gradient(135deg,rgba(255,255,255,0.03),transparent_42%)]">
+    <main className="min-h-screen bg-court-black">
       <section className="mx-auto flex min-h-screen w-full max-w-6xl flex-col justify-center px-6 py-16">
         <div className="max-w-3xl">
-          <p className="mb-5 inline-flex rounded-full border border-court-line/40 px-4 py-2 text-sm font-semibold uppercase tracking-[0.22em] text-court-line">
+          <p className="mb-5 inline-flex rounded-full border border-court-line/35 bg-court-line/10 px-4 py-2 text-sm font-semibold tracking-[0.08em] text-court-line">
             Draft code 24
           </p>
-          <h1 className="text-5xl font-black leading-tight text-court-text sm:text-7xl">
+          <h1 className="text-5xl font-semibold leading-tight tracking-tight text-court-text sm:text-7xl">
             DraftMind
           </h1>
           <p className="mt-5 max-w-2xl text-2xl font-semibold text-court-text sm:text-3xl">
@@ -18,13 +18,13 @@ export default function Home() {
           <div className="mt-10 flex flex-wrap items-center gap-4">
             <a
               href="/draft"
-              className="rounded-md bg-court-line px-6 py-3 text-base font-black text-court-black shadow-glow transition hover:translate-y-[-1px] hover:bg-[#b9ff50]"
+              className="rounded-full bg-court-line px-6 py-3 text-base font-semibold text-court-black transition active:scale-95"
             >
               开始模拟选秀
             </a>
             <a
               href="http://127.0.0.1:8000/api/health"
-              className="rounded-md border border-white/20 px-6 py-3 text-base font-semibold text-court-text transition hover:border-court-line/70 hover:text-court-line"
+              className="rounded-full border border-white/20 px-6 py-3 text-base font-semibold text-court-text transition hover:border-court-line/70 hover:text-court-line active:scale-95"
             >
               API Health
             </a>
@@ -41,7 +41,7 @@ export default function Home() {
               key={title}
               className="rounded-md border border-white/10 bg-court-panel/80 p-5"
             >
-              <h2 className="text-lg font-black text-court-line">{title}</h2>
+              <h2 className="text-lg font-semibold text-court-line">{title}</h2>
               <p className="mt-3 text-sm leading-6 text-court-muted">{body}</p>
             </article>
           ))}

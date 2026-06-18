@@ -18,11 +18,11 @@ body {
 body {
   margin: 0;
   background:
-    linear-gradient(rgba(163, 255, 36, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(163, 255, 36, 0.04) 1px, transparent 1px),
-    #060807;
+    linear-gradient(rgba(214, 179, 90, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(214, 179, 90, 0.02) 1px, transparent 1px),
+    #07080a;
   background-size: 24px 24px;
-  color: #f7fff2;
+  color: #f4f1e8;
 }
 
 a {
@@ -37,26 +37,26 @@ a {
  * above the bottom edge. */
 .aside-scroll {
   scrollbar-width: thin;
-  scrollbar-color: rgba(163, 255, 36, 0.45) rgba(255, 255, 255, 0.05);
+  scrollbar-color: rgba(214, 179, 90, 0.28) transparent;
 }
 
 .aside-scroll::-webkit-scrollbar {
-  width: 8px;
+  width: 6px;
 }
 
 .aside-scroll::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.04);
+  background: transparent;
   border-radius: 999px;
 }
 
 .aside-scroll::-webkit-scrollbar-thumb {
-  background: rgba(163, 255, 36, 0.45);
+  background: rgba(214, 179, 90, 0.28);
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 
 .aside-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(163, 255, 36, 0.7);
+  background: rgba(214, 179, 90, 0.5);
   background-clip: padding-box;
 }

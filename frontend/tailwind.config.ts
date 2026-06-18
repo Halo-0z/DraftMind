@@ -9,15 +9,15 @@ const config: Config = {
     extend: {
       colors: {
         court: {
-          black: "#060807",
-          panel: "#101410",
-          line: "#a3ff24",
-          text: "#f7fff2",
-          muted: "#9aa79a",
+          black: "#07080a",
+          panel: "#111418",
+          line: "#d6b35a",
+          text: "#f4f1e8",
+          muted: "#9da3ad",
         },
       },
       boxShadow: {
-        glow: "0 0 32px rgba(163, 255, 36, 0.28)",
+        glow: "0 1px 0 rgba(255, 255, 255, 0.06)",
       },
     },
   },

@@ -302,6 +302,13 @@ function candidateSourceLabel(source: string | null | undefined): string | null 
   return CANDIDATE_SOURCE_LABELS[source] ?? source.replaceAll("_", " ");
 }
 
+function visibleTeamMeta(value: string | null | undefined): string | null {
+  if (!value || value.toLowerCase() === "unknown") {
+    return null;
+  }
+  return value;
+}
+
 function diagnosticsWarnings(player: RankedProspect): string[] {
   return player.diagnostics_warnings ?? [];
 }
@@ -766,17 +773,17 @@ export default function DraftPage() {
       <section className="mx-auto grid min-h-screen w-full max-w-7xl gap-8 px-5 py-8 lg:grid-cols-[360px_1fr] lg:px-8">
         <aside className="aside-scroll lg:sticky lg:top-8 lg:h-[calc(100vh-4rem)] lg:overflow-y-auto lg:pr-2">
           <a
-            className="inline-flex text-sm font-semibold text-court-line transition hover:text-[#c8ff75]"
+            className="inline-flex text-sm font-semibold text-court-line transition hover:text-court-text"
             href="/"
           >
             Back
           </a>
 
           <div className="mt-8">
-            <p className="text-xs font-black uppercase tracking-[0.22em] text-court-line">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-court-line">
               Draft code 24
             </p>
-            <h1 className="mt-4 text-4xl font-black leading-tight sm:text-5xl">
+            <h1 className="mt-4 text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">
               选秀推荐台
             </h1>
             <p className="mt-4 text-sm leading-7 text-court-muted">
@@ -809,7 +816,7 @@ export default function DraftPage() {
                 <span>签位</span>
                 {teamPicks.length > 0 ? (
                   <button
-                    className="text-[11px] font-black uppercase tracking-[0.16em] text-court-line transition hover:text-[#c8ff75] disabled:opacity-50"
+                    className="text-[11px] font-semibold uppercase tracking-[0.12em] text-court-line transition hover:text-court-text disabled:opacity-50"
                     disabled={isPickOverridden}
                     onClick={() => setIsPickOverridden(true)}
                     type="button"
@@ -849,7 +856,7 @@ export default function DraftPage() {
                 <p className="mt-2 text-xs leading-5 text-court-muted">
                   手动模式：输入任意签位以模拟交易后场景。
                   <button
-                    className="ml-2 font-black uppercase tracking-[0.16em] text-court-line transition hover:text-[#c8ff75]"
+                    className="ml-2 font-semibold uppercase tracking-[0.12em] text-court-line transition hover:text-court-text"
                     onClick={() => {
                       setIsPickOverridden(false);
                       if (teamPicks[0]) {
@@ -866,12 +873,12 @@ export default function DraftPage() {
 
             {teamPicks.length > 1 ? (
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className="text-[11px] font-black uppercase tracking-[0.16em] text-court-muted">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-court-muted">
                   该队其他签位
                 </span>
                 {teamPicks.map((teamPick) => (
                   <button
-                    className={`h-8 rounded-full border px-3 text-xs font-black transition ${teamPick.pick_no === pick
+                    className={`h-8 rounded-full border px-3 text-xs font-semibold transition ${teamPick.pick_no === pick
                       ? "border-court-line bg-court-line text-court-black"
                       : "border-white/15 bg-court-black text-court-text hover:border-court-line/60"
                       }`}
@@ -895,7 +902,7 @@ export default function DraftPage() {
             ) : null}
 
             <button
-              className="mt-6 h-12 w-full rounded-md bg-court-line text-base font-black text-court-black shadow-glow transition hover:bg-[#c0ff5c] disabled:cursor-not-allowed disabled:opacity-60"
+              className="mt-6 h-12 w-full rounded-full bg-court-line text-base font-semibold text-court-black transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={isSubmitting || isLoadingTeams || teamId === null}
               type="submit"
             >
@@ -933,8 +940,8 @@ export default function DraftPage() {
                 </p>
               </div>
               <div className="text-right text-sm text-court-muted">
-                <p>{selectedTeam?.conference ?? "Conference"}</p>
-                <p>{selectedTeam?.division ?? "Division"}</p>
+                <p>{visibleTeamMeta(selectedTeam?.conference) ?? "Conference"}</p>
+                <p>{visibleTeamMeta(selectedTeam?.division) ?? "Division"}</p>
               </div>
             </div>
           </div>
@@ -1074,10 +1081,10 @@ export default function DraftPage() {
                   </span>
                 </span>
               </label>
-              <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-md border border-fuchsia-300/25 bg-fuchsia-300/[0.04] p-3 transition hover:border-fuchsia-300/55">
+              <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-md border border-court-line/25 bg-court-line/[0.04] p-3 transition hover:border-court-line/55">
                 <input
                   checked={usePredictionCalibration}
-                  className="mt-1 h-4 w-4 accent-fuchsia-300"
+                  className="mt-1 h-4 w-4 accent-court-line"
                   onChange={(event) => {
                     const next = event.target.checked;
                     setUsePredictionCalibration(next);
@@ -1252,13 +1259,13 @@ function RecommendationPanel({
 
   return (
     <div className="grid gap-5">
-      <article className="rounded-md border border-court-line/40 bg-[linear-gradient(135deg,rgba(163,255,36,0.14),rgba(16,20,16,0.96)_38%,rgba(16,20,16,0.94))] p-5 shadow-glow sm:p-7">
+      <article className="rounded-md border border-court-line/35 bg-court-panel p-5 sm:p-7">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-xs font-black uppercase tracking-[0.22em] text-court-line">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-court-line">
               Recommended pick
             </p>
-            <h2 className="mt-3 text-4xl font-black leading-tight sm:text-6xl">
+            <h2 className="mt-3 text-4xl font-semibold leading-tight tracking-tight sm:text-6xl">
               {player.prospect.name}
             </h2>
             <p className="mt-3 text-lg font-bold text-court-muted">
@@ -1270,7 +1277,7 @@ function RecommendationPanel({
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-court-muted">
               Final score
             </p>
-            <p className="mt-1 text-5xl font-black text-court-line">
+            <p className="mt-1 text-5xl font-semibold tracking-tight text-court-line">
               {player.scores.final_score}
             </p>
           </div>
@@ -1289,7 +1296,7 @@ function RecommendationPanel({
           </div>
 
           <div className="rounded-md border border-white/10 bg-court-black/70 p-4">
-            <p className="text-sm font-black text-court-line">基础数据</p>
+            <p className="text-sm font-semibold text-court-line">基础数据</p>
             <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
               <Metric label="PPG" value={player.prospect.ppg} />
               <Metric label="RPG" value={player.prospect.rpg} />
@@ -1312,10 +1319,10 @@ function RecommendationPanel({
       <section className="rounded-md border border-white/10 bg-court-panel p-5">
         <div className="flex items-end justify-between gap-4">
           <div>
-            <p className="text-xs font-black uppercase tracking-[0.22em] text-court-line">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-court-line">
               Alternatives
             </p>
-            <h3 className="mt-2 text-2xl font-black">备选球员</h3>
+            <h3 className="mt-2 text-2xl font-semibold tracking-tight">备选球员</h3>
           </div>
           <p className="text-sm font-bold text-court-muted">
             {recommendation.team.abbr} · Pick #{recommendation.pick}
@@ -1328,10 +1335,10 @@ function RecommendationPanel({
               className="rounded-md border border-white/10 bg-court-black/70 p-4"
               key={alternative.prospect.id}
             >
-              <p className="text-sm font-black text-court-line">
+              <p className="text-sm font-semibold text-court-line">
                 #{index + 2}
               </p>
-              <h4 className="mt-2 min-h-14 text-xl font-black leading-tight">
+              <h4 className="mt-2 min-h-14 text-xl font-semibold leading-tight tracking-tight">
                 {alternative.prospect.name}
               </h4>
               <p className="text-sm font-bold text-court-muted">
@@ -1392,7 +1399,7 @@ function Metric({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-2">
       <p className="text-xs font-bold text-court-muted">{label}</p>
-      <p className="mt-1 text-lg font-black text-court-text">{value}</p>
+      <p className="mt-1 text-lg font-semibold text-court-text">{value}</p>
     </div>
   );
 }
@@ -1400,7 +1407,7 @@ function Metric({ label, value }: { label: string; value: number }) {
 function InsightList({ title, items }: { title: string; items: string[] }) {
   return (
     <section className="rounded-md border border-white/10 bg-court-panel p-5">
-      <h3 className="text-xl font-black text-court-line">{title}</h3>
+      <h3 className="text-xl font-semibold text-court-line">{title}</h3>
       <ul className="mt-4 grid gap-3">
         {items.map((item) => (
           <li
@@ -1432,10 +1439,10 @@ function AgentPanel({
     <section className="rounded-md border border-white/10 bg-court-panel p-5">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-xs font-black uppercase tracking-[0.22em] text-court-line">
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-court-line">
             Draft agent
           </p>
-          <h3 className="mt-2 text-2xl font-black">Agent 追问</h3>
+          <h3 className="mt-2 text-2xl font-semibold tracking-tight">Agent 追问</h3>
         </div>
         <p className="text-sm font-bold text-court-muted">
           {answer
@@ -1453,7 +1460,7 @@ function AgentPanel({
           placeholder="问：为什么不选另一个球员？最大风险是什么？"
         />
         <button
-          className="h-12 rounded-md bg-court-line px-5 text-sm font-black text-court-black shadow-glow transition hover:bg-[#c0ff5c] disabled:cursor-not-allowed disabled:opacity-60"
+          className="h-12 rounded-full bg-court-line px-5 text-sm font-semibold text-court-black transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={isAsking || question.trim().length === 0}
           type="submit"
         >
@@ -1791,7 +1798,7 @@ function ProjectionPredictionDiagnostics({
           ) : null}
           {player.prediction_sort_score !== undefined &&
             player.prediction_sort_score !== null ? (
-            <span className="rounded-md border border-fuchsia-300/30 bg-fuchsia-300/10 px-2 py-1 text-xs font-black text-fuchsia-100">
+            <span className="rounded-md border border-sky-300/30 bg-sky-300/10 px-2 py-1 text-xs font-black text-sky-100">
               预测辅助分 {player.prediction_sort_score.toFixed(1)}
             </span>
           ) : null}
@@ -1860,12 +1867,12 @@ function ProjectionPredictionDiagnostics({
           </span>
         ) : null}
         {player.prediction_selection_rank ? (
-          <span className="inline-flex items-center rounded-md border border-fuchsia-300/30 bg-fuchsia-300/10 px-2 py-1 text-[11px] font-black text-fuchsia-100">
+          <span className="inline-flex items-center rounded-md border border-sky-300/30 bg-sky-300/10 px-2 py-1 text-[11px] font-black text-sky-100">
             预测排序 #{player.prediction_selection_rank}
           </span>
         ) : null}
         {player.prediction_selection_applied ? (
-          <span className="inline-flex items-center rounded-md border border-fuchsia-300/40 bg-fuchsia-300/15 px-2 py-1 text-[11px] font-black text-fuchsia-100">
+          <span className="inline-flex items-center rounded-md border border-court-line/40 bg-court-line/15 px-2 py-1 text-[11px] font-black text-court-line">
             本次因预测信息被选中
           </span>
         ) : null}
@@ -2378,7 +2385,7 @@ function EvidencePackageView({ evidence }: { evidence: PickEvidencePackage }) {
             ) : null}
             {ranking.prediction_sort_score !== undefined &&
               ranking.prediction_sort_score !== null ? (
-              <span className="inline-flex items-center rounded-md border border-fuchsia-300/30 bg-fuchsia-300/10 px-2 py-1 text-[11px] font-black text-fuchsia-100">
+              <span className="inline-flex items-center rounded-md border border-sky-300/30 bg-sky-300/10 px-2 py-1 text-[11px] font-black text-sky-100">
                 预测辅助分 {ranking.prediction_sort_score}
               </span>
             ) : null}
@@ -2521,7 +2528,7 @@ function RetrievedEvidenceList({ items }: { items: RetrievedEvidence[] }) {
             >
               <div className="flex flex-wrap items-center gap-1.5">
                 {isManualNote ? (
-                  <span className="inline-flex items-center rounded-md border border-fuchsia-300/40 bg-fuchsia-300/10 px-2 py-0.5 text-[10px] font-black text-fuchsia-100">
+                  <span className="inline-flex items-center rounded-md border border-court-line/35 bg-court-line/10 px-2 py-0.5 text-[10px] font-black text-court-line">
                     人工备注｜只读证据，不参与评分
                   </span>
                 ) : (
@@ -2584,7 +2591,7 @@ function CitationList({ citations }: { citations: EvidenceCitation[] }) {
             >
               <div className="flex flex-wrap items-center gap-1.5">
                 {isManualNote ? (
-                  <span className="inline-flex items-center rounded-md border border-fuchsia-300/40 bg-fuchsia-300/10 px-2 py-0.5 text-[10px] font-black text-fuchsia-100">
+                  <span className="inline-flex items-center rounded-md border border-court-line/35 bg-court-line/10 px-2 py-0.5 text-[10px] font-black text-court-line">
                     人工备注｜只读证据，不参与评分
                   </span>
                 ) : null}
@@ -2713,16 +2720,16 @@ function ExplanationPanel({ evidence }: { evidence: PickEvidencePackage }) {
   }
 
   return (
-    <div className="mt-3 rounded-md border border-fuchsia-300/25 bg-fuchsia-300/[0.04] px-3 py-2">
+    <div className="mt-3 rounded-md border border-court-line/25 bg-court-line/[0.04] px-3 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-fuchsia-200">
+        <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
           选人解释
-          <span className="ml-1.5 text-[10px] font-bold text-fuchsia-200/60">
+          <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
             Explanation
           </span>
         </p>
         <button
-          className="h-8 rounded-md border border-fuchsia-300/40 bg-court-black px-3 text-[11px] font-black uppercase tracking-[0.12em] text-fuchsia-100 transition hover:border-fuchsia-300 hover:bg-fuchsia-300/10 disabled:cursor-not-allowed disabled:opacity-60"
+          className="h-8 rounded-md border border-court-line/40 bg-court-black px-3 text-[11px] font-black tracking-[0.08em] text-court-line transition hover:border-court-line hover:bg-court-line/10 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
           disabled={state.loading || state.data !== undefined}
           onClick={handleGenerateExplanation}
           type="button"
@@ -2799,7 +2806,7 @@ function ExplanationView({
         <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
           不会改选人
         </span>
-        <span className="inline-flex items-center rounded-md border border-fuchsia-300/30 bg-fuchsia-300/10 px-2 py-1 text-[11px] font-black text-fuchsia-100">
+        <span className="inline-flex items-center rounded-md border border-court-line/30 bg-court-line/10 px-2 py-1 text-[11px] font-black text-court-line">
           稳定演示解释
         </span>
       </div>
@@ -2999,7 +3006,7 @@ function ExplanationView({
         <p className="mt-1 text-[11px] leading-5 text-court-text">
           {EXPLANATION_SAFETY_TEXT}
         </p>
-        <p className="mt-2 text-[11px] leading-5 text-fuchsia-100">
+        <p className="mt-2 text-[11px] leading-5 text-court-line">
           {EXPLANATION_SAFETY_NOTE_TEXT}
         </p>
       </div>
