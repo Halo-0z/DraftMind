@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 type ThemeMode = "dark" | "light";
 
 const STORAGE_KEY = "draftmind-theme";
+const DEFAULT_THEME: ThemeMode = "light";
 
 function isThemeMode(value: string | null): value is ThemeMode {
   return value === "dark" || value === "light";
@@ -19,7 +20,7 @@ export function ThemeToggle() {
 
   useEffect(() => {
     const savedTheme = localStorage.getItem(STORAGE_KEY);
-    const initialTheme = isThemeMode(savedTheme) ? savedTheme : "dark";
+    const initialTheme = isThemeMode(savedTheme) ? savedTheme : DEFAULT_THEME;
     applyTheme(initialTheme);
     setTheme(initialTheme);
   }, []);
