@@ -9,7 +9,7 @@ export default function Home() {
       <section className="mx-auto flex min-h-screen w-full max-w-6xl flex-col justify-center px-6 py-16">
         <div className="max-w-3xl">
           <p className="mb-5 inline-flex rounded-full border border-court-line/35 bg-court-line/10 px-4 py-2 text-sm font-semibold tracking-[0.08em] text-court-line">
-            Draft code 24
+            2026 模拟选秀
           </p>
           <h1 className="text-5xl font-semibold leading-tight tracking-tight text-court-text sm:text-7xl">
             DraftMind
@@ -31,7 +31,7 @@ export default function Home() {
               href="http://127.0.0.1:8000/api/health"
               className="rounded-full border border-court-border px-6 py-3 text-base font-semibold text-court-text transition hover:border-court-line/70 hover:text-court-line active:scale-95"
             >
-              API Health
+              检查服务状态
             </a>
           </div>
         </div>
@@ -39,8 +39,8 @@ export default function Home() {
         <div className="mt-16 grid gap-4 md:grid-cols-3">
           {[
             ["数据先行", "所有推荐先从结构化数据和评分引擎产生。"],
-            ["规则兜底", "没有 API Key 时也能用 mock explanation 完整演示。"],
-            ["Agent 解释", "AI 负责解释推荐、风险与备选，不凭空编数据。"],
+            ["演示可用", "没有模型密钥时，也能用稳定演示解释完整体验流程。"],
+            ["解释只读", "AI 只负责解释推荐、风险与备选，不凭空编数据。"],
           ].map(([title, body]) => (
             <article
               key={title}

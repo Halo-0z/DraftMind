@@ -276,6 +276,91 @@ function marketAlignmentLabel(label: string): string {
   return labels[label] ?? label;
 }
 
+function formatMarketWarning(message: string): string {
+  const match = message.match(
+    /^Market top-30 missing warning:\s*(.+?)\s+expected\s+#(\d+)\s+was not selected in this simulation\.$/i,
+  );
+  if (match) {
+    return `行情前 30 未选中提示：${match[1]} 预计第 ${match[2]} 顺位，但本次模拟没有被选中。`;
+  }
+  return message.replace(/^Market top-30 missing warning:/i, "行情前 30 未选中提示：");
+}
+
+function formatTradeAction(action: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    keep_pick: "保留选择",
+    shop_down: "考虑向下交易",
+    trade_down: "考虑向下交易",
+    trade_up: "考虑向上交易",
+    watch: "继续观察",
+  };
+  if (!action) {
+    return "未知状态";
+  }
+  return labels[action.toLowerCase()] ?? "未知状态";
+}
+
+function formatDiagnosticText(message: string): string {
+  const exactLabels: Record<string, string> = {
+    "Pick is within projected draft range.": "选择处于预测区间内。",
+    "Pick is slightly earlier than projected range.": "选择略早于预测区间。",
+    "Pick is much earlier than projected range; possible reach.":
+      "选择明显早于预测区间，可能偏激进。",
+    "Pick is slightly later than projected range.": "选择略晚于预测区间。",
+    "Pick is much later than projected range; availability risk.":
+      "选择明显晚于预测区间，存在行情滑落风险。",
+    "Market slip warning: selected 8+ picks later than expected market range.":
+      "行情滑落提示：实际选择比预测区间晚 8 个以上顺位。",
+    "No prospect projection signal available.": "暂无球员行情预测信号。",
+    "Low-confidence imported stats used in ranking context.":
+      "使用了低置信度导入数据，结果需谨慎参考。",
+    "No market reference with heuristic stats; selection carries elevated data-risk.":
+      "缺少行情参考，且使用了启发式数据，结果风险更高。",
+  };
+  if (exactLabels[message]) {
+    return exactLabels[message];
+  }
+  const tierMatch = message.match(/^Pick is reasonable for projected tier (\d+)\.$/i);
+  if (tierMatch) {
+    return `符合第 ${tierMatch[1]} 档预测范围。`;
+  }
+  const nearTierMatch = message.match(/^Pick is near projected tier (\d+) band\.$/i);
+  if (nearTierMatch) {
+    return `接近第 ${nearTierMatch[1]} 档预测范围。`;
+  }
+  const outsideTierMatch = message.match(/^Pick is outside projected tier (\d+) band\.$/i);
+  if (outsideTierMatch) {
+    return `已超出第 ${outsideTierMatch[1]} 档预测范围。`;
+  }
+  const teamSignalMatch = message.match(/^Team-specific projection signal:\s*(.+)\.$/i);
+  if (teamSignalMatch) {
+    const label = formatProjectionSource(teamSignalMatch[1]);
+    return `存在球队倾向信号：${label}。`;
+  }
+  return message;
+}
+
+function formatDecisionLogLine(line: string): string {
+  if (line.startsWith("Market context:")) {
+    return line.replace(/^Market context:\s*/i, "选秀行情：");
+  }
+  if (line.startsWith("Scouting fit tie-breaker applied:")) {
+    return line.replace(/^Scouting fit tie-breaker applied:\s*/i, "同档适配打破平局：");
+  }
+  return formatDiagnosticText(line);
+}
+
+function formatProfileSource(source: string): string {
+  const labels: Record<string, string> = {
+    manual: "手动调整",
+    manual_profile: "手动调整",
+    default: "默认画像",
+    inferred: "系统推断",
+    imported: "导入数据",
+  };
+  return labels[source.toLowerCase()] ?? source;
+}
+
 function formatShadowDelta(delta: number | null | undefined): string | null {
   if (delta === null || delta === undefined) {
     return null;
@@ -446,7 +531,7 @@ export default function DraftPage() {
         setTeamProfileForm(teamProfileToForm(profile));
         setTeamProfileReason(profile?.manual_override_reason ?? "");
         setTeamProfileStatus(
-          profile ? null : "尚未创建 profile，保存后会创建 manual profile。",
+          profile ? null : "尚未创建需求画像，保存后会创建手动画像。",
         );
       })
       .catch(() => {
@@ -454,7 +539,7 @@ export default function DraftPage() {
           setTeamProfile(null);
           setTeamProfileForm({ ...EMPTY_TEAM_PROFILE_FORM });
           setTeamProfileReason("");
-          setTeamProfileError("加载球队球探需求 Profile 失败。");
+          setTeamProfileError("加载球队需求画像失败。");
         }
       })
       .finally(() => {
@@ -588,9 +673,9 @@ export default function DraftPage() {
       setTeamProfile(saved);
       setTeamProfileForm(teamProfileToForm(saved));
       setTeamProfileReason(saved.manual_override_reason ?? "");
-      setTeamProfileStatus("已保存 manual profile。");
+      setTeamProfileStatus("已保存需求画像。");
     } catch (err) {
-      setTeamProfileError(formatApiError(err, "保存球队球探需求 Profile 失败。"));
+      setTeamProfileError(formatApiError(err, "保存球队需求画像失败。"));
     } finally {
       setIsTeamProfileSaving(false);
     }
@@ -664,7 +749,7 @@ export default function DraftPage() {
       });
       setAgentAnswer(result);
     } catch {
-      setError("Agent 追问失败，请确认后端 /api/agent/ask 可用。");
+      setError("追问失败，请确认后端服务可用。");
     } finally {
       setIsAskingAgent(false);
     }
@@ -778,14 +863,14 @@ export default function DraftPage() {
               className="inline-flex text-sm font-semibold text-court-line transition hover:text-court-text"
               href="/"
             >
-              Back
+              返回
             </a>
             <ThemeToggle />
           </div>
 
           <div className="mt-8">
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-court-line">
-              Draft code 24
+              2026 模拟选秀
             </p>
             <h1 className="mt-4 text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">
               选秀推荐台
@@ -922,7 +1007,7 @@ export default function DraftPage() {
 
           <div className="mt-5 rounded-md border border-white/10 bg-white/[0.03] p-5">
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-court-muted">
-              Current board
+              当前选择
             </p>
             <div className="mt-4 flex items-end justify-between gap-4">
               <div>
@@ -930,12 +1015,12 @@ export default function DraftPage() {
                   {selectedTeam?.abbr ?? "--"}
                 </p>
                 <p className="mt-1 text-sm text-court-muted">
-                  Pick #{pick || "--"} · NBA ID{" "}
+                  顺位 #{pick || "--"} · NBA 球队 ID{" "}
                   {selectedTeam?.nba_team_id ?? "--"}
                 </p>
                 <p className="mt-1 text-xs font-bold text-court-line">
                   {isPickOverridden
-                    ? "what-if 模拟"
+                    ? "假设交易"
                     : selectedPick?.original_team
                       ? `来自 ${selectedPick.original_team}`
                       : selectedPick
@@ -944,8 +1029,8 @@ export default function DraftPage() {
                 </p>
               </div>
               <div className="text-right text-sm text-court-muted">
-                <p>{visibleTeamMeta(selectedTeam?.conference) ?? "Conference"}</p>
-                <p>{visibleTeamMeta(selectedTeam?.division) ?? "Division"}</p>
+                <p>{visibleTeamMeta(selectedTeam?.conference) ?? "联盟"}</p>
+                <p>{visibleTeamMeta(selectedTeam?.division) ?? "分区"}</p>
               </div>
             </div>
           </div>
@@ -972,7 +1057,7 @@ export default function DraftPage() {
 
           <div className="mt-5 rounded-md border border-white/10 bg-court-panel p-5">
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-court-muted">
-              Full board
+              完整模拟
             </p>
             <p className="mt-3 text-sm leading-6 text-court-muted">
               按选秀顺位逐签模拟，已选球员会从后续候选池移除。
@@ -984,8 +1069,8 @@ export default function DraftPage() {
               </p>
               <div className="mt-3 grid grid-cols-2 overflow-hidden rounded-md border border-white/10 bg-court-black">
                 {[
-                  { label: "第一轮", rounds: 1 as const, detail: "30 picks" },
-                  { label: "两轮", rounds: 2 as const, detail: "60 picks" },
+                  { label: "第一轮", rounds: 1 as const, detail: "30 签" },
+                  { label: "两轮", rounds: 2 as const, detail: "60 签" },
                 ].map((option) => {
                   const isActive = simulationRounds === option.rounds;
                   return (
@@ -1009,7 +1094,7 @@ export default function DraftPage() {
               </div>
               <p className="mt-2 text-xs leading-5 text-court-muted">
                 当前将模拟 {simulationRounds === 1 ? "第一轮" : "两轮"} ·{" "}
-                {simulationPickLimit} picks；超出范围的锁定签会保留在表单中，但不会发送到本次模拟。
+                {simulationPickLimit} 签；超出范围的锁定签会保留在表单中，但不会发送到本次模拟。
               </p>
             </div>
 
@@ -1116,7 +1201,7 @@ export default function DraftPage() {
             <div className="mt-5">
               <div className="flex items-end justify-between gap-3">
                 <p className="text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
-                  手动锁定 picks
+                  手动锁定顺位
                 </p>
                 <button
                   className="h-8 rounded-md border border-court-line/50 px-3 text-[11px] font-black uppercase tracking-[0.16em] text-court-line transition hover:border-court-line hover:bg-court-line hover:text-court-black disabled:cursor-not-allowed disabled:opacity-50"
@@ -1135,8 +1220,7 @@ export default function DraftPage() {
 
               {lockedPicks.length === 0 ? (
                 <p className="mt-3 text-xs leading-5 text-court-muted">
-                  未锁定任何顺位，将使用自动模拟。后端也支持按
-                  prospect_name 锁定，但本阶段 UI 暂未暴露。
+                  未锁定任何顺位，将使用自动模拟。系统也支持按球员姓名锁定，但本阶段界面暂未开放。
                 </p>
               ) : (
                 <div className="mt-3 grid gap-2">
@@ -1267,7 +1351,7 @@ function RecommendationPanel({
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-court-line">
-              Recommended pick
+              推荐选择
             </p>
             <h2 className="mt-3 text-4xl font-semibold leading-tight tracking-tight sm:text-6xl">
               {player.prospect.name}
@@ -1279,7 +1363,7 @@ function RecommendationPanel({
           </div>
           <div className="rounded-md border border-white/15 bg-court-black/70 px-5 py-4 text-right">
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-court-muted">
-              Final score
+              综合评分
             </p>
             <p className="mt-1 text-5xl font-semibold tracking-tight text-court-line">
               {player.scores.final_score}
@@ -1302,12 +1386,12 @@ function RecommendationPanel({
           <div className="rounded-md border border-white/10 bg-court-black/70 p-4">
             <p className="text-sm font-semibold text-court-line">基础数据</p>
             <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-              <Metric label="PPG" value={player.prospect.ppg} />
-              <Metric label="RPG" value={player.prospect.rpg} />
-              <Metric label="APG" value={player.prospect.apg} />
-              <Metric label="3P%" value={player.prospect.three_pct} />
-              <Metric label="UP" value={player.prospect.upside_score} />
-              <Metric label="RISK" value={player.prospect.risk_score} />
+              <Metric label="得分 PPG" value={player.prospect.ppg} />
+              <Metric label="篮板 RPG" value={player.prospect.rpg} />
+              <Metric label="助攻 APG" value={player.prospect.apg} />
+              <Metric label="三分 3P%" value={player.prospect.three_pct} />
+              <Metric label="潜力" value={player.prospect.upside_score} />
+              <Metric label="风险" value={player.prospect.risk_score} />
             </div>
           </div>
         </div>
@@ -1324,12 +1408,12 @@ function RecommendationPanel({
         <div className="flex items-end justify-between gap-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-court-line">
-              Alternatives
+              备选方案
             </p>
             <h3 className="mt-2 text-2xl font-semibold tracking-tight">备选球员</h3>
           </div>
           <p className="text-sm font-bold text-court-muted">
-            {recommendation.team.abbr} · Pick #{recommendation.pick}
+            {recommendation.team.abbr} · 第 {recommendation.pick} 顺位
           </p>
         </div>
 
@@ -1418,7 +1502,7 @@ function InsightList({ title, items }: { title: string; items: string[] }) {
             className="rounded-md border border-white/10 bg-court-black/70 px-4 py-3 text-sm leading-6 text-court-text"
             key={item}
           >
-            {item}
+            {formatDiagnosticText(item)}
           </li>
         ))}
       </ul>
@@ -1444,14 +1528,14 @@ function AgentPanel({
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-court-line">
-            Draft agent
+            推荐解释
           </p>
-          <h3 className="mt-2 text-2xl font-semibold tracking-tight">Agent 追问</h3>
+          <h3 className="mt-2 text-2xl font-semibold tracking-tight">追问推荐原因</h3>
         </div>
         <p className="text-sm font-bold text-court-muted">
           {answer
-            ? `${answer.provider} · ${answer.model}${answer.is_mock ? " · mock" : ""}`
-            : "ranking first"}
+            ? `解释来源：${answer.is_mock ? "稳定演示" : "模型服务"}`
+            : "评分引擎优先"}
         </p>
       </div>
 
@@ -1497,7 +1581,7 @@ function AgentPanel({
           {answer.rag_context ? (
             <details className="rounded-md border border-white/10 bg-court-black/70 p-4 text-sm leading-6 text-court-muted">
               <summary className="cursor-pointer text-xs font-black uppercase tracking-[0.16em] text-court-line">
-                RAG 上下文 · {answer.rag_context.length} 字符 · 真实可引用的新闻 / 球探报告
+                引用资料 · {answer.rag_context.length} 字符 · 真实可引用的新闻 / 球探报告
               </summary>
               <pre className="mt-3 whitespace-pre-wrap text-xs text-court-muted">
                 {answer.rag_context}
@@ -1540,28 +1624,30 @@ function TeamScoutingProfileEditor({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.18em] text-court-muted">
-            Team scouting needs
+            球队需求
           </p>
-          <h2 className="mt-2 text-lg font-black">球队球探需求 Profile</h2>
+          <h2 className="mt-2 text-lg font-black">球队需求画像</h2>
         </div>
         {profile ? (
           <div className="text-right text-xs font-bold text-court-muted">
-            <p className="text-court-line">{profile.source}</p>
-            <p>{Math.round(profile.need_confidence * 100)}% confidence</p>
+            <p className="text-court-line">
+              来源：{formatProfileSource(profile.source)}
+            </p>
+            <p>可信度 {Math.round(profile.need_confidence * 100)}%</p>
           </div>
         ) : null}
       </div>
 
       <p className="mt-3 text-xs leading-5 text-court-muted">
-        这些需求只会用于 scouting fit 诊断和显式开启的同档适配打破平局；不会直接改写 final_score。
+        这些需求只会用于球探适配诊断和显式开启的同档适配打破平局；不会直接改写综合评分。
       </p>
       <p className="mt-2 text-xs leading-5 text-court-muted">
-        Profile 会影响球探适配标签；只有启用“同档适配打破平局”时，才可能影响同档小分差选择。
+        需求画像会影响球探适配标签；只有启用“同档适配打破平局”时，才可能影响同档小分差选择。
       </p>
 
       {isLoading ? (
         <p className="mt-4 rounded-md border border-white/10 bg-court-black/60 px-3 py-3 text-sm text-court-muted">
-          正在读取 {team?.abbr ?? "球队"} profile...
+          正在读取 {team?.abbr ?? "球队"} 需求画像...
         </p>
       ) : (
         <div className="mt-4 grid gap-4">
@@ -1591,7 +1677,7 @@ function TeamScoutingProfileEditor({
             <textarea
               className="mt-1 min-h-20 w-full resize-y rounded-md border border-white/10 bg-court-black px-3 py-2 text-sm font-semibold leading-6 text-court-text outline-none transition placeholder:text-court-muted focus:border-court-line"
               maxLength={500}
-              placeholder="例如：manual profile: contender needing rim protection, rebounding, spacing, and NBA-ready contributors."
+              placeholder="例如：争冠队，更需要护框、篮板、空间和即战力。"
               value={reason}
               onChange={(event) => onReasonChange(event.target.value)}
             />
@@ -1615,7 +1701,7 @@ function TeamScoutingProfileEditor({
             onClick={onSave}
             type="button"
           >
-            {isSaving ? "保存中..." : "保存 Profile"}
+            {isSaving ? "保存中..." : "保存需求画像"}
           </button>
         </div>
       )}
@@ -1635,7 +1721,7 @@ function RosterPanel({
       <div className="flex items-end justify-between gap-4">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.18em] text-court-muted">
-            NBA roster cache
+            当前阵容
           </p>
           <h2 className="mt-2 text-lg font-black">当前阵容</h2>
         </div>
@@ -1646,7 +1732,7 @@ function RosterPanel({
 
       <div className="mt-4 max-h-72 overflow-y-auto rounded-md border border-white/10">
         {isLoading ? (
-          <p className="px-3 py-4 text-sm text-court-muted">读取 NBA roster...</p>
+          <p className="px-3 py-4 text-sm text-court-muted">正在读取当前阵容...</p>
         ) : roster.length > 0 ? (
           roster.map((player) => (
             <article
@@ -1674,7 +1760,7 @@ function RosterPanel({
           ))
         ) : (
           <p className="px-3 py-4 text-sm leading-6 text-court-muted">
-            暂无缓存阵容。可运行 import_nba_rosters.py 导入 NBA.com 数据。
+            暂无阵容缓存。可先导入 NBA.com 阵容数据。
           </p>
         )}
       </div>
@@ -1797,7 +1883,7 @@ function ProjectionPredictionDiagnostics({
           </div>
           {hasPredictionShadow(player) ? (
             <span className="rounded-md border border-sky-300/30 bg-sky-300/10 px-2 py-1 text-xs font-black text-sky-100">
-              Shadow {player.prediction_shadow_score?.toFixed(1)}
+              影子评分 {player.prediction_shadow_score?.toFixed(1)}
             </span>
           ) : null}
           {player.prediction_sort_score !== undefined &&
@@ -1892,7 +1978,7 @@ function ProjectionPredictionDiagnostics({
 
       {!compact && player.market_alignment_notes?.length ? (
         <p className="mt-2 text-[11px] leading-5 text-court-muted">
-          {player.market_alignment_notes[0]}
+          {formatDiagnosticText(player.market_alignment_notes[0])}
         </p>
       ) : null}
 
@@ -1916,7 +2002,7 @@ function ProjectionPredictionDiagnostics({
               className="inline-flex items-center rounded-md border border-sky-300/20 bg-sky-300/[0.06] px-2 py-1 text-[11px] font-bold text-sky-100"
               key={`${note}-${index}`}
             >
-              {note}
+              {formatDiagnosticText(note)}
             </span>
           ))}
         </div>
@@ -1944,7 +2030,7 @@ function RiskDiagnosticsWarnings({
             className="rounded-md border border-amber-300/30 bg-amber-300/[0.07] px-2 py-1 text-[11px] font-bold leading-5 text-amber-100"
             key={`${warning}-${index}`}
           >
-            风险：{warning}
+            风险：{formatDiagnosticText(warning)}
           </p>
         ))}
       </div>
@@ -1962,7 +2048,7 @@ function RiskDiagnosticsWarnings({
             <span aria-hidden="true" className="text-amber-300">
               -
             </span>
-            <span>{warning}</span>
+            <span>{formatDiagnosticText(warning)}</span>
           </li>
         ))}
       </ul>
@@ -1978,7 +2064,7 @@ function CandidateBoardPreview({
   return (
     <div className="grid gap-2">
       <p className="text-xs font-black uppercase tracking-[0.12em] text-court-line">
-        Live board
+        实时候选池
       </p>
       <div className="grid gap-2">
         {candidates.map((candidate) => {
@@ -2000,7 +2086,7 @@ function CandidateBoardPreview({
                   ) : null}
                 </div>
                 <span className="text-xs font-black text-court-muted">
-                  Final {candidate.scores.final_score}
+                  综合 {candidate.scores.final_score}
                 </span>
               </div>
               <ScoutingDiagnostics compact player={candidate} />
@@ -2025,16 +2111,16 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-xs font-black uppercase tracking-[0.22em] text-court-line">
-            Simulated board
+            模拟结果
           </p>
           <h3 className="mt-2 text-2xl font-black">完整顺位模拟</h3>
         </div>
         <p className="text-sm font-bold text-court-muted">
-          {simulation.year} · {simulation.total_picks} picks
+          {simulation.year} · {simulation.total_picks} 签
         </p>
       </div>
       <p className="mt-3 text-sm leading-6 text-court-muted">
-        {simulation.source ?? "Draft order source unavailable"} · 每一签都会重新计算实时可选候选池，并记录交易评估。
+        {simulation.source ?? "选秀顺位来源暂不可用"} · 每一签都会重新计算实时可选候选池，并记录交易评估。
       </p>
 
       {missingWarnings.length > 0 ? (
@@ -2048,7 +2134,7 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                 <span aria-hidden="true" className="text-amber-300">
                   -
                 </span>
-                <span>{warning}</span>
+                <span>{formatMarketWarning(warning)}</span>
               </li>
             ))}
           </ul>
@@ -2057,10 +2143,10 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
 
       <div className="mt-5 overflow-hidden rounded-md border border-white/10">
         <div className="grid grid-cols-[64px_82px_1fr_72px] bg-white/[0.04] px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-court-muted">
-          <span>Pick</span>
-          <span>Team</span>
-          <span>Player</span>
-          <span className="text-right">Score</span>
+          <span>顺位</span>
+          <span>球队</span>
+          <span>球员</span>
+          <span className="text-right">评分</span>
         </div>
 
         <div className="max-h-[620px] overflow-y-auto">
@@ -2077,7 +2163,7 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                     {locked ? (
                       <span
                         className="ml-2 inline-flex items-center gap-1 rounded-md border border-amber-300/40 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-amber-200"
-                        title="This pick was locked by user override"
+                        title="用户手动锁定该签"
                       >
                         手动锁定
                       </span>
@@ -2107,11 +2193,11 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                 </div>
                 <details className="mt-3 rounded-md border border-white/10 bg-court-black/60 px-3 py-2">
                   <summary className="cursor-pointer text-xs font-black uppercase tracking-[0.12em] text-court-line">
-                    Agent process · {pick.trade_evaluation.action} ·{" "}
+                    决策流程 · {formatTradeAction(pick.trade_evaluation.action)} ·{" "}
                     {Math.round(pick.trade_evaluation.probability * 100)}%
                   </summary>
                   <div className="mt-3 grid gap-3 text-sm leading-6 text-court-muted">
-                    <p>{pick.trade_evaluation.rationale}</p>
+                    <p>{formatDiagnosticText(pick.trade_evaluation.rationale)}</p>
                     <ul className="grid gap-2">
                       {pick.decision_log.map((line) => {
                         // Phase 6A-B: a "Market context:" line is a
@@ -2137,7 +2223,7 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                                 只读选秀行情
                               </span>
                               <span className="text-court-muted/90">
-                                {line}
+                                {formatDecisionLogLine(line)}
                               </span>
                             </li>
                           );
@@ -2152,12 +2238,12 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                                 同档适配
                               </span>
                               <span className="text-court-muted/90">
-                                {line}
+                                {formatDecisionLogLine(line)}
                               </span>
                             </li>
                           );
                         }
-                        return <li key={line}>{line}</li>;
+                        return <li key={line}>{formatDecisionLogLine(line)}</li>;
                       })}
                     </ul>
                     <CandidateBoardPreview candidates={pick.candidate_board} />
@@ -2202,7 +2288,7 @@ function NewsPanel({
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-xs font-black uppercase tracking-[0.22em] text-court-line">
-            News context
+            相关新闻
           </p>
           <h3 className="mt-2 text-2xl font-black">
             相关新闻{prospectName ? ` · ${prospectName}` : ""}
@@ -2317,7 +2403,7 @@ function EvidencePanel({
     <div className="mt-3 rounded-md border border-sky-300/20 bg-sky-300/[0.035] px-3 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-[11px] font-black uppercase tracking-[0.16em] text-sky-200">
-          Evidence 证据面板
+          证据面板
         </p>
         <button
           className="h-8 rounded-md border border-sky-300/40 bg-court-black px-3 text-[11px] font-black uppercase tracking-[0.12em] text-sky-100 transition hover:border-sky-300 hover:bg-sky-300/10 disabled:cursor-not-allowed disabled:opacity-60"
@@ -2439,7 +2525,7 @@ function EvidencePackageView({ evidence }: { evidence: PickEvidencePackage }) {
           </div>
           {market.alignment_notes && market.alignment_notes.length > 0 ? (
             <p className="mt-2 text-[11px] leading-5 text-court-muted">
-              {market.alignment_notes[0]}
+              {formatDiagnosticText(market.alignment_notes[0])}
             </p>
           ) : null}
         </div>
@@ -2452,10 +2538,10 @@ function EvidencePackageView({ evidence }: { evidence: PickEvidencePackage }) {
           </p>
           <ul className="mt-2 grid gap-1 text-[11px] font-bold leading-5 text-amber-100">
             {(risk.risk_flags ?? []).map((flag, index) => (
-              <li key={`flag-${index}`}>· {flag}</li>
+              <li key={`flag-${index}`}>· {formatDiagnosticText(flag)}</li>
             ))}
             {(risk.diagnostics_warnings ?? []).map((warning, index) => (
-              <li key={`warn-${index}`}>· {warning}</li>
+              <li key={`warn-${index}`}>· {formatDiagnosticText(warning)}</li>
             ))}
           </ul>
         </div>
@@ -2471,7 +2557,7 @@ function EvidencePackageView({ evidence }: { evidence: PickEvidencePackage }) {
               <li>· 与行情差异触发冲突阈值</li>
             ) : null}
             {(conflict.notes ?? []).map((note, index) => (
-              <li key={`conflict-${index}`}>· {note}</li>
+              <li key={`conflict-${index}`}>· {formatDiagnosticText(note)}</li>
             ))}
           </ul>
         </div>
@@ -2728,9 +2814,6 @@ function ExplanationPanel({ evidence }: { evidence: PickEvidencePackage }) {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
           选人解释
-          <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
-            Explanation
-          </span>
         </p>
         <button
           className="h-8 rounded-md border border-court-line/40 bg-court-black px-3 text-[11px] font-black tracking-[0.08em] text-court-line transition hover:border-court-line hover:bg-court-line/10 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
@@ -2819,9 +2902,6 @@ function ExplanationView({
       <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
         <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
           为什么选他
-          <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
-            Summary
-          </span>
         </p>
         <p className="mt-2 text-xs leading-6 text-court-text">
           {sanitizeExplanationText(explanation.summary)}
@@ -2833,9 +2913,6 @@ function ExplanationView({
         <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
           <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
             主要原因
-            <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
-              Key Reasons
-            </span>
           </p>
           <ul className="mt-2 grid gap-1.5">
             {explanation.key_reasons.map((reason, index) => (
@@ -2858,9 +2935,6 @@ function ExplanationView({
         <div className="rounded-md border border-sky-300/20 bg-sky-300/[0.05] p-3">
           <p className="text-[11px] font-black tracking-[0.12em] text-sky-200">
             选秀行情
-            <span className="ml-1.5 text-[10px] font-bold text-sky-200/60">
-              Draft Outlook
-            </span>
           </p>
           <p className="mt-2 text-[11px] leading-5 text-court-text">
             {sanitizeExplanationText(explanation.market_context)}
@@ -2873,9 +2947,6 @@ function ExplanationView({
         <div className="rounded-md border border-amber-300/30 bg-amber-300/[0.07] p-3">
           <p className="text-[11px] font-black tracking-[0.12em] text-amber-200">
             风险提示
-            <span className="ml-1.5 text-[10px] font-bold text-amber-200/60">
-              Risk Summary
-            </span>
           </p>
           <p className="mt-2 text-[11px] leading-5 text-amber-100">
             {sanitizeExplanationText(explanation.risk_summary)}
@@ -2888,9 +2959,6 @@ function ExplanationView({
         <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
           <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
             补充依据
-            <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
-              Evidence Notes
-            </span>
           </p>
           <ul className="mt-2 grid gap-1.5">
             {explanation.evidence_notes.map((note, index) => (
@@ -2912,9 +2980,6 @@ function ExplanationView({
       <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
         <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
           需要注意
-          <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
-            Limitations
-          </span>
         </p>
         {explanation.limitations.length > 0 ? (
           <ul className="mt-2 grid gap-1.5">
@@ -2945,9 +3010,6 @@ function ExplanationView({
         <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
           <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
             参考依据
-            <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
-              Citation Refs
-            </span>
           </p>
           <div className="mt-2 grid gap-2">
             {explanation.citation_refs.map((ref, index) => {
@@ -3003,9 +3065,6 @@ function ExplanationView({
       <div className="rounded-md border border-court-line/30 bg-court-line/[0.06] p-3">
         <p className="text-[10px] font-black tracking-[0.16em] text-court-line">
           说明
-          <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
-            Safety
-          </span>
         </p>
         <p className="mt-1 text-[11px] leading-5 text-court-text">
           {EXPLANATION_SAFETY_TEXT}
