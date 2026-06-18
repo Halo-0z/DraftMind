@@ -1,6 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.database import get_db
 from app.schemas.evidence import (
     PickEvidencePackage,
     PickEvidenceRequest,
@@ -16,11 +18,29 @@ router = APIRouter(prefix="/evidence", tags=["evidence"])
 
 
 @router.post("/pick", response_model=PickEvidencePackage)
-def build_pick_evidence_api(request: PickEvidenceRequest) -> PickEvidencePackage:
+def build_pick_evidence_api(
+    request: PickEvidenceRequest,
+    db: Session = Depends(get_db),
+) -> PickEvidencePackage:
+    """RAG-v1-D1-C: config-gated ManualNote persisted retrieval.
+
+    When ``settings.evidence_retrieve_manual_notes`` is False (default), the
+    DB session is NOT forwarded to ``build_pick_evidence`` and
+    ``retrieve_knowledge`` stays False — behavior is identical to pre-RAG-v1.
+    When the flag is True, the session is forwarded and retrieval is enabled
+    so persisted ManualNote rows are appended to ``retrieved_evidence`` /
+    ``citations`` only.  Decision / scoring / ranking fields are never touched.
+    The flag is read server-side; it is NOT exposed via the API schema or
+    controllable by the frontend.
+    """
+    settings = get_settings()
+    retrieve = settings.evidence_retrieve_manual_notes
     return build_pick_evidence(
         request.simulation,
         request.pick,
         manual_notes=request.manual_notes,
+        db=db if retrieve else None,
+        retrieve_knowledge=retrieve,
     )
 
 

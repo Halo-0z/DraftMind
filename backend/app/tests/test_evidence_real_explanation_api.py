@@ -412,13 +412,26 @@ def test_does_not_call_simulation_service(monkeypatch: pytest.MonkeyPatch) -> No
 # ---------------------------------------------------------------------------
 
 
-def test_router_does_not_import_db_modules() -> None:
+def test_explanation_endpoint_does_not_directly_depend_on_db() -> None:
+    """RAG-v1-D1-C: the real explanation endpoint must not directly depend on DB.
+
+    The ``/pick`` endpoint is now allowed to inject a DB session for
+    config-gated ManualNote retrieval, so scanning the whole router module
+    for ``get_db`` no longer works.  Instead, we inspect the source of the
+    ``explain_pick`` function directly and assert it does not reference DB
+    session helpers.  This preserves the original safety intent (the real
+    explanation endpoint stays DB-free) without blocking the ``/pick``
+    endpoint's legitimate DB injection.
+    """
+    import inspect
+
     from app.routers import evidence as router_module
 
-    source = open(router_module.__file__, encoding="utf-8").read().lower()
+    source = inspect.getsource(router_module.explain_pick).lower()
     assert "sessionlocal" not in source
     assert "get_db" not in source
     assert "get_session" not in source
+    assert "depends(get_db" not in source
 
 
 # ---------------------------------------------------------------------------

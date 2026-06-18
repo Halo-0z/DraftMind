@@ -46,6 +46,17 @@ class Settings(BaseSettings):
     llm_explanation_max_tokens: int = 900
     llm_explanation_temperature: float = 0.0
 
+    # ---- Evidence Retrieval (RAG-v1-D1-C) ----
+    # ManualNote persisted retrieval is OFF by default.  When False, the
+    # evidence router does NOT pass a DB session to build_pick_evidence and
+    # the retrieval path stays dormant (identical to pre-RAG-v1 behavior).
+    # When True, the router injects the DB session and sets
+    # retrieve_knowledge=True so persisted ManualNote rows are appended to
+    # retrieved_evidence / citations only — never to ranking / scoring /
+    # selection fields.  This flag is read server-side; it is NOT exposed
+    # via the API schema or controllable by the frontend.
+    evidence_retrieve_manual_notes: bool = False
+
     # ---- News ingestion ----
     news_user_agent: str = "Mozilla/5.0 DraftMind/0.1 (Chinese)"
     news_refresh_minutes: int = 60
