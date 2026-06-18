@@ -1,6 +1,7 @@
+from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.simulation import SimulateResponse, SimulatedPickRead
 
@@ -252,3 +253,87 @@ class EvidenceDocumentRead(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
     evidence_only: Literal[True] = True
+
+
+# RAG-v2-M1-B: EvidenceChunk — a semantic retrieval unit.
+#
+# An EvidenceChunk represents a slice of a knowledge source document (e.g. a
+# ManualNote body split into 200-500 char segments).  It is the granular unit
+# that future semantic retrieval (M2) will embed and search.
+#
+# Safety design (mirrors EvidenceDocumentRead):
+#
+# - ``evidence_only`` is Literal-locked to ``True`` so any consumer can tell
+#   at the type level that this chunk must never feed back into scoring,
+#   selection, or ranking.
+# - ``extra="forbid"`` ensures no dangerous override / rerank / replacement
+#   field can sneak in via construction.
+# - ``retrieval_score`` is bounded to [0, 1] and is display-only — it never
+#   participates in decision logic.
+# - ``content`` is required and non-empty so every chunk carries meaningful
+#   text for explanation.
+# - ``chunk_index`` must be < ``chunk_count`` (validated via model_validator).
+#
+# This schema does NOT touch ``PickEvidencePackage`` / ``PickExplanation``
+# behavior.  It is only consumed by ``evidence_chunk_mapper`` to produce an
+# ``EvidenceDocumentRead``, which then flows through the existing
+# ``map_evidence_document`` pipeline.
+
+
+class EvidenceChunk(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Identity
+    chunk_id: str
+    source_type: str
+    source_id: str
+    chunk_index: int = Field(ge=0)
+    chunk_count: int = Field(ge=1)
+
+    # Content
+    title: str | None = None
+    content: str = Field(min_length=1)
+    excerpt: str | None = None
+
+    # Entity linkage
+    entity_type: str | None = None
+    entity_id: int | str | None = None
+    prospect_id: int | None = None
+    prospect_name: str | None = None
+    team_id: int | None = None
+    team_abbr: str | None = None
+    pick_no: int | None = Field(default=None, ge=1, le=60)
+    year: int | None = Field(default=None, ge=1900, le=2100)
+
+    # Source metadata
+    url: str | None = None
+    source_name: str | None = None
+    publisher: str | None = None
+    author: str | None = None
+    published_at: datetime | None = None
+
+    # Retrieval metadata
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    retrieval_score: float | None = Field(default=None, ge=0, le=1)
+    relevance_reason: str | None = None
+    conflict_note: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+    # Safety lock
+    evidence_only: Literal[True] = True
+
+    @field_validator("content")
+    @classmethod
+    def _content_must_be_non_whitespace(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("content must not be empty or whitespace-only")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_chunk_index_range(self) -> "EvidenceChunk":
+        if self.chunk_index >= self.chunk_count:
+            raise ValueError(
+                f"chunk_index ({self.chunk_index}) must be < "
+                f"chunk_count ({self.chunk_count})"
+            )
+        return self
