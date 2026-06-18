@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ThemeToggle } from "../components/ThemeToggle";
 import {
   AgentAskResponse,
   askAgent,
@@ -772,12 +773,15 @@ export default function DraftPage() {
     <main className="min-h-screen bg-court-black text-court-text">
       <section className="mx-auto grid min-h-screen w-full max-w-7xl gap-8 px-5 py-8 lg:grid-cols-[360px_1fr] lg:px-8">
         <aside className="aside-scroll lg:sticky lg:top-8 lg:h-[calc(100vh-4rem)] lg:overflow-y-auto lg:pr-2">
-          <a
-            className="inline-flex text-sm font-semibold text-court-line transition hover:text-court-text"
-            href="/"
-          >
-            Back
-          </a>
+          <div className="flex items-center justify-between gap-3">
+            <a
+              className="inline-flex text-sm font-semibold text-court-line transition hover:text-court-text"
+              href="/"
+            >
+              Back
+            </a>
+            <ThemeToggle />
+          </div>
 
           <div className="mt-8">
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-court-line">

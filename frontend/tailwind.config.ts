@@ -9,15 +9,17 @@ const config: Config = {
     extend: {
       colors: {
         court: {
-          black: "#07080a",
-          panel: "#111418",
-          line: "#d6b35a",
-          text: "#f4f1e8",
-          muted: "#9da3ad",
+          black: "rgb(var(--court-black) / <alpha-value>)",
+          panel: "rgb(var(--court-panel) / <alpha-value>)",
+          line: "rgb(var(--court-line) / <alpha-value>)",
+          text: "rgb(var(--court-text) / <alpha-value>)",
+          muted: "rgb(var(--court-muted) / <alpha-value>)",
+          border: "rgb(var(--court-border) / <alpha-value>)",
+          faint: "rgb(var(--court-faint) / <alpha-value>)",
         },
       },
       boxShadow: {
-        glow: "0 1px 0 rgba(255, 255, 255, 0.06)",
+        glow: "var(--court-shadow-glow)",
       },
     },
   },

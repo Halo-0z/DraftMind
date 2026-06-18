@@ -2,8 +2,35 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+:root,
+html[data-theme="dark"] {
   color-scheme: dark;
+  --court-black: 7 8 10;
+  --court-panel: 17 20 24;
+  --court-line: 214 179 90;
+  --court-text: 244 241 232;
+  --court-muted: 157 163 173;
+  --court-border: 63 67 73;
+  --court-faint: 23 26 30;
+  --court-grid-line: 214 179 90;
+  --court-grid-alpha-y: 0.025;
+  --court-grid-alpha-x: 0.02;
+  --court-shadow-glow: 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --court-black: 239 236 226;
+  --court-panel: 250 248 242;
+  --court-line: 143 108 45;
+  --court-text: 35 39 43;
+  --court-muted: 94 104 118;
+  --court-border: 194 183 157;
+  --court-faint: 236 231 219;
+  --court-grid-line: 169 145 94;
+  --court-grid-alpha-y: 0.14;
+  --court-grid-alpha-x: 0.1;
+  --court-shadow-glow: 0 1px 0 rgba(35, 39, 43, 0.06);
 }
 
 * {
@@ -18,11 +45,18 @@ body {
 body {
   margin: 0;
   background:
-    linear-gradient(rgba(214, 179, 90, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(214, 179, 90, 0.02) 1px, transparent 1px),
-    #07080a;
+    linear-gradient(
+      rgb(var(--court-grid-line) / var(--court-grid-alpha-y)) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      90deg,
+      rgb(var(--court-grid-line) / var(--court-grid-alpha-x)) 1px,
+      transparent 1px
+    ),
+    rgb(var(--court-black));
   background-size: 24px 24px;
-  color: #f4f1e8;
+  color: rgb(var(--court-text));
 }
 
 a {
@@ -37,7 +71,7 @@ a {
  * above the bottom edge. */
 .aside-scroll {
   scrollbar-width: thin;
-  scrollbar-color: rgba(214, 179, 90, 0.28) transparent;
+  scrollbar-color: rgb(var(--court-line) / 0.28) transparent;
 }
 
 .aside-scroll::-webkit-scrollbar {
@@ -50,13 +84,45 @@ a {
 }
 
 .aside-scroll::-webkit-scrollbar-thumb {
-  background: rgba(214, 179, 90, 0.28);
+  background: rgb(var(--court-line) / 0.28);
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 
 .aside-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(214, 179, 90, 0.5);
+  background: rgb(var(--court-line) / 0.5);
   background-clip: padding-box;
+}
+
+html[data-theme="light"] [class*="border-white/"] {
+  border-color: rgb(var(--court-border));
+}
+
+html[data-theme="light"] [class*="bg-white/["] {
+  background-color: rgb(var(--court-faint));
+}
+
+html[data-theme="light"] [class*="text-sky-"] {
+  color: rgb(var(--court-line));
+}
+
+html[data-theme="light"] [class*="border-sky-"] {
+  border-color: rgb(var(--court-line) / 0.34);
+}
+
+html[data-theme="light"] [class*="bg-sky-"] {
+  background-color: rgb(var(--court-line) / 0.08);
+}
+
+html[data-theme="light"] [class*="text-red-"] {
+  color: rgb(145 46 46);
+}
+
+html[data-theme="light"] [class*="border-red-"] {
+  border-color: rgb(145 46 46 / 0.34);
+}
+
+html[data-theme="light"] [class*="bg-red-"] {
+  background-color: rgb(145 46 46 / 0.08);
 }
