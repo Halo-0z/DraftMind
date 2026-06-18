@@ -2285,11 +2285,11 @@ function EvidencePanel({
       ) : null}
 
       {isOpen && state.data ? (
-        <EvidencePackageView evidence={state.data} />
+        <ExplanationPanel evidence={state.data} />
       ) : null}
 
       {isOpen && state.data ? (
-        <ExplanationPanel evidence={state.data} />
+        <EvidencePackageView evidence={state.data} />
       ) : null}
     </div>
   );
@@ -2645,7 +2645,7 @@ function ExplanationPanel({ evidence }: { evidence: PickEvidencePackage }) {
 
       {!state.loading && !state.error && !state.data ? (
         <p className="mt-2 rounded-md border border-white/10 bg-court-black/60 px-3 py-2 text-xs leading-5 text-court-muted">
-          暂无解释。请先加载证据包。
+          暂无解释。点击「生成解释」查看只读说明。
         </p>
       ) : null}
 
@@ -2663,13 +2663,20 @@ function ExplanationView({
   explanation: PickExplanation;
   citations: EvidenceCitation[];
 }) {
-  // Build a lookup from source_id → citation so we can enrich citation_refs
-  // display when a matching citation exists.  We never fabricate citations:
-  // if a ref doesn't match, we just show the raw ref string.
-  const citationBySourceId = new Map<string, EvidenceCitation>();
+  // Build a lookup keyed by source_id / title / url so a citation_ref can
+  // match an existing citation via any of these three fields.  We never
+  // fabricate citations: if a ref doesn't match any key, we show the raw
+  // ref string plus an explicit "未匹配 citation metadata" notice.
+  const citationLookup = new Map<string, EvidenceCitation>();
   for (const citation of citations) {
     if (citation.source_id) {
-      citationBySourceId.set(citation.source_id, citation);
+      citationLookup.set(citation.source_id, citation);
+    }
+    if (citation.title) {
+      citationLookup.set(citation.title, citation);
+    }
+    if (citation.url) {
+      citationLookup.set(citation.url, citation);
     }
   }
 
@@ -2800,7 +2807,7 @@ function ExplanationView({
           </p>
           <div className="mt-2 grid gap-1.5">
             {explanation.citation_refs.map((ref, index) => {
-              const matched = citationBySourceId.get(ref);
+              const matched = citationLookup.get(ref);
               return (
                 <div
                   className="flex flex-wrap items-center gap-1.5 text-[10px] font-bold"
@@ -2821,6 +2828,11 @@ function ExplanationView({
                     >
                       来源
                     </a>
+                  ) : null}
+                  {!matched ? (
+                    <span className="text-[10px] font-bold text-amber-300/80">
+                      未匹配 citation metadata
+                    </span>
                   ) : null}
                 </div>
               );
