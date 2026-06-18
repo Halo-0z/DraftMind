@@ -215,13 +215,13 @@ function formatProjectionSource(source: string): string {
 
 function marketAlignmentLabel(label: string): string {
   const labels: Record<string, string> = {
-    高于市场: "比市场更早",
-    明显高于市场: "明显早于市场",
-    低于市场: "比市场更晚",
-    明显低于市场: "明显晚于市场",
+    高于市场: "比行情预测更早被选",
+    明显高于市场: "明显比行情预测更早被选",
+    低于市场: "比行情预测更晚被选",
+    明显低于市场: "明显比行情预测更晚被选",
     一致: "基本一致",
-    接近: "接近市场",
-    无市场参考: "暂无市场参考",
+    接近: "接近行情预测",
+    无市场参考: "暂无外部预测",
   };
   return labels[label] ?? label;
 }
@@ -1767,10 +1767,10 @@ function ProjectionPredictionDiagnostics({
         ) : null}
         {player.market_alignment_label ? (
           <span className="inline-flex items-center rounded-md border border-court-line/30 bg-court-line/10 px-2 py-1 text-[11px] font-black text-court-line">
-            市场对比{" "}
+            选秀行情{" "}
             {player.market_expected_pick
-              ? `市场预计 #${player.market_expected_pick}`
-              : "暂无市场参考"}
+              ? `外部预测 #${player.market_expected_pick}`
+              : "暂无外部预测"}
             {player.draftmind_selected_pick
               ? ` · DraftMind #${player.draftmind_selected_pick}`
               : ""}
@@ -1980,7 +1980,7 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
       {missingWarnings.length > 0 ? (
         <div className="mt-5 rounded-md border border-amber-300/30 bg-amber-300/[0.07] p-4">
           <p className="text-xs font-black uppercase tracking-[0.16em] text-amber-200">
-            市场 Top-30 未选中提示
+            选秀行情 Top-30 未选中提示
           </p>
           <ul className="mt-3 grid gap-1.5 text-sm font-bold leading-6 text-amber-100">
             {missingWarnings.map((warning, index) => (
@@ -2074,7 +2074,7 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                               className="flex items-start gap-2 border-l-2 border-amber-300/40 bg-amber-300/[0.05] py-1 pl-3 pr-2"
                             >
                               <span className="mt-0.5 inline-block shrink-0 rounded border border-amber-300/40 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-bold text-amber-200">
-                                只读市场上下文
+                                只读选秀行情
                               </span>
                               <span className="text-court-muted/90">
                                 {line}
@@ -2352,12 +2352,12 @@ function EvidencePackageView({ evidence }: { evidence: PickEvidencePackage }) {
       {market ? (
         <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
           <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
-            Market Evidence
+            选秀行情
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             {market.expected_pick !== undefined && market.expected_pick !== null ? (
               <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
-                市场预计 #{market.expected_pick}
+                外部预测 #{market.expected_pick}
               </span>
             ) : null}
             {market.selected_pick !== undefined && market.selected_pick !== null ? (
@@ -2368,7 +2368,7 @@ function EvidencePackageView({ evidence }: { evidence: PickEvidencePackage }) {
             {market.market_pick_delta !== undefined &&
               market.market_pick_delta !== null ? (
               <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
-                偏差 {formatMarketDelta(market.market_pick_delta) ?? market.market_pick_delta}
+                与行情差异 {formatMarketDelta(market.market_pick_delta) ?? market.market_pick_delta}
               </span>
             ) : null}
             {market.alignment_label ? (
@@ -2408,7 +2408,7 @@ function EvidencePackageView({ evidence }: { evidence: PickEvidencePackage }) {
           </p>
           <ul className="mt-2 grid gap-1 text-[11px] font-bold leading-5 text-red-100">
             {conflict.market_delta_conflict ? (
-              <li>· 市场顺位偏差触发冲突阈值</li>
+              <li>· 与行情差异触发冲突阈值</li>
             ) : null}
             {(conflict.notes ?? []).map((note, index) => (
               <li key={`conflict-${index}`}>· {note}</li>
@@ -2602,6 +2602,15 @@ const EXPLANATION_TERM_REPLACEMENTS: Array<[RegExp, string]> = [
   [/\bmock explanation\b/gi, "稳定演示解释"],
   [/\bLLM\b/g, "解释模型"],
   [/\bprovider\b/g, "AI 服务"],
+  [/明显高于市场/g, "明显比行情预测更早被选"],
+  [/高于市场/g, "比行情预测更早被选"],
+  [/明显低于市场/g, "明显比行情预测更晚被选"],
+  [/低于市场/g, "比行情预测更晚被选"],
+  [/市场预计/g, "外部预测"],
+  [/市场偏差/g, "与行情差异"],
+  [/市场顺位偏差/g, "与行情差异"],
+  [/市场参考/g, "选秀行情"],
+  [/市场上下文/g, "选秀行情"],
 ];
 
 function sanitizeExplanationText(text: string): string {
@@ -2781,9 +2790,9 @@ function ExplanationView({
       {explanation.market_context ? (
         <div className="rounded-md border border-sky-300/20 bg-sky-300/[0.05] p-3">
           <p className="text-[11px] font-black tracking-[0.12em] text-sky-200">
-            市场参考
+            选秀行情
             <span className="ml-1.5 text-[10px] font-bold text-sky-200/60">
-              Market Context
+              Draft Outlook
             </span>
           </p>
           <p className="mt-2 text-[11px] leading-5 text-court-text">
