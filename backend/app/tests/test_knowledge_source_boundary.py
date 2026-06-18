@@ -32,6 +32,13 @@ FORBIDDEN_KNOWLEDGE_TOKENS = [
     "evidence_document_mapper",
     "EvidenceDocumentRead",
     "evidence_retrieval",
+    # RAG-v2-M2-C1: embedding modules are knowledge-source-only — they
+    # prepare retrieval payloads but must never influence selection /
+    # scoring / ranking.
+    "embedding_service",
+    "EmbeddingVector",
+    "embed_chunk",
+    "embed_chunks",
 ]
 
 
@@ -78,6 +85,64 @@ def test_manual_note_model_does_not_import_selection_system() -> None:
     }
 
     module_attrs = set(vars(model_module).keys())
+    assert forbidden_module_attrs.isdisjoint(module_attrs)
+
+
+def test_embedding_service_does_not_import_selection_system() -> None:
+    """The embedding service must not import ranking / simulation /
+    prediction / recommendation modules (reverse boundary).
+
+    RAG-v2-M2-C1: embeddings are knowledge-source-only — they prepare
+    retrieval payloads but must never influence selection / scoring /
+    ranking.  This test enforces the boundary at the module-attribute
+    level so a future import slip is caught immediately.
+    """
+    import app.services.embedding_service as embedding_module
+
+    forbidden_module_attrs = {
+        "ranking_engine",
+        "simulation_service",
+        "prediction_calibration",
+        "recommendation_service",
+        "team_need_service",
+        "team_need_adjustment",
+        "scouting_fit",
+        "rank_prospects",
+        "simulate_draft",
+    }
+
+    module_attrs = set(vars(embedding_module).keys())
+    assert forbidden_module_attrs.isdisjoint(module_attrs)
+
+
+def test_embedding_service_does_not_import_db_or_llm_or_ml_libs() -> None:
+    """The embedding service must not import DB / LLM / external ML libraries.
+
+    RAG-v2-M2-C1: the fake embedding is pure-Python (``hashlib`` +
+    ``math`` + ``struct``).  This test guards against accidental
+    introduction of ``sqlalchemy`` / ``openai`` / ``sentence_transformers``
+    / ``torch`` / ``faiss`` / ``chroma`` / ``numpy`` imports.
+    """
+    import app.services.embedding_service as embedding_module
+
+    forbidden_module_attrs = {
+        "sqlalchemy",
+        "SessionLocal",
+        "sessionmaker",
+        "create_engine",
+        "get_db",
+        "openai",
+        "anthropic",
+        "sentence_transformers",
+        "torch",
+        "faiss",
+        "chromadb",
+        "numpy",
+        "transformers",
+        "sklearn",
+    }
+
+    module_attrs = set(vars(embedding_module).keys())
     assert forbidden_module_attrs.isdisjoint(module_attrs)
 
 
