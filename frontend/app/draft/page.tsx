@@ -2580,11 +2580,50 @@ type ExplanationState = {
   data?: PickExplanation;
 };
 
+// RAG-v0-M3.2-D: User-facing copy polish.  These constants and helpers only
+// affect the *display* layer — backend data, schema, endpoints, and types are
+// not touched.  Technical terms that leak through the mock explanation text
+// are sanitized to plain Chinese for the user; the underlying API payload
+// keeps its original snake_case field names.
 const EXPLANATION_SAFETY_TEXT =
-  "解释只基于当前 Evidence Package 生成；selected_player、final_score、prediction_sort_score 已由结构化系统锁定，LLM 不参与选人、评分或排序。";
+  "这段说明只用于帮助你理解本次选择，不会改变选中的球员、评分或排序结果。";
 
-const EXPLANATION_MOCK_BADGE_TEXT =
-  "Deterministic mock explanation，用于稳定展示解释格式；不调用真实 provider。";
+const EXPLANATION_SAFETY_NOTE_TEXT =
+  "当前为稳定演示解释，不调用真实 AI 服务。";
+
+// Display-only translation for technical terms that may appear in the mock
+// explanation text.  We do NOT modify the backend payload — this is a pure
+// display sanitize.  Word boundaries (\b) prevent partial replacements
+// inside other identifiers (e.g. "provider_foo" stays intact).
+const EXPLANATION_TERM_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/\bPickEvidencePackage\b/g, "当前证据包"],
+  [/\bprediction_sort_score\b/g, "预测参考分"],
+  [/\bfinal_score\b/g, "综合评分"],
+  [/\bmock explanation\b/gi, "稳定演示解释"],
+  [/\bLLM\b/g, "解释模型"],
+  [/\bprovider\b/g, "AI 服务"],
+];
+
+function sanitizeExplanationText(text: string): string {
+  let result = text;
+  for (const [pattern, replacement] of EXPLANATION_TERM_REPLACEMENTS) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+
+// Friendly display titles for known citation_refs source_ids.  These are
+// display labels only — they do NOT fabricate citation metadata.  If a ref
+// matches a real citation, the matched citation's title takes priority over
+// this friendly label.  If a ref is unmatched, the friendly label (when
+// available) is shown as the main label, with "未匹配到来源详情" as a
+// secondary notice and the raw ref kept as weak small text.
+const CITATION_REF_FRIENDLY_TITLES: Record<string, string> = {
+  consensus_reference: "球员选秀预测",
+  market_projection: "球员选秀预测",
+  consensus_mock: "球队选择预测",
+  team_projection: "球队选择预测",
+};
 
 function ExplanationPanel({ evidence }: { evidence: PickEvidencePackage }) {
   const [state, setState] = useState<ExplanationState>({ loading: false });
@@ -2612,7 +2651,10 @@ function ExplanationPanel({ evidence }: { evidence: PickEvidencePackage }) {
     <div className="mt-3 rounded-md border border-fuchsia-300/25 bg-fuchsia-300/[0.04] px-3 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-[11px] font-black uppercase tracking-[0.16em] text-fuchsia-200">
-          Explanation 只读解释
+          选人解释
+          <span className="ml-1.5 text-[10px] font-bold text-fuchsia-200/60">
+            Explanation
+          </span>
         </p>
         <button
           className="h-8 rounded-md border border-fuchsia-300/40 bg-court-black px-3 text-[11px] font-black uppercase tracking-[0.12em] text-fuchsia-100 transition hover:border-fuchsia-300 hover:bg-fuchsia-300/10 disabled:cursor-not-allowed disabled:opacity-60"
@@ -2621,19 +2663,19 @@ function ExplanationPanel({ evidence }: { evidence: PickEvidencePackage }) {
           type="button"
         >
           {state.loading
-            ? "正在生成只读解释..."
+            ? "正在生成解释..."
             : state.data
               ? "已生成解释"
               : "生成解释"}
         </button>
       </div>
       <p className="mt-1 text-[11px] leading-5 text-court-muted">
-        点击「生成解释」调用 deterministic mock explanation endpoint，只读展示解释内容；不会调用真实 provider，不会改写选人结果。
+        点击「生成解释」查看本次选择的简明说明。当前解释为稳定演示版本，不调用真实 AI 服务，也不会改变选人结果。
       </p>
 
       {state.loading ? (
         <p className="mt-2 rounded-md border border-white/10 bg-court-black/60 px-3 py-2 text-xs leading-5 text-court-muted">
-          正在生成只读解释...
+          正在生成解释...
         </p>
       ) : null}
 
@@ -2645,7 +2687,7 @@ function ExplanationPanel({ evidence }: { evidence: PickEvidencePackage }) {
 
       {!state.loading && !state.error && !state.data ? (
         <p className="mt-2 rounded-md border border-white/10 bg-court-black/60 px-3 py-2 text-xs leading-5 text-court-muted">
-          暂无解释。点击「生成解释」查看只读说明。
+          还没有生成解释。点击「生成解释」查看为什么选择这名球员。
         </p>
       ) : null}
 
@@ -2682,34 +2724,42 @@ function ExplanationView({
 
   return (
     <div className="mt-3 grid gap-3 text-xs leading-5 text-court-muted">
-      {/* Lock badges — always shown, decision boundary is fixed. */}
+      {/* Lock badges — always shown, decision boundary is fixed.
+          RAG-v0-M3.2-D: copy is now user-facing; technical phrasing
+          like "LLM 可改写决策：否" is removed. */}
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="inline-flex items-center rounded-md border border-court-line/30 bg-court-line/10 px-2 py-1 text-[11px] font-black text-court-line">
-          决策已锁定
+          结果已锁定
         </span>
         <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
-          LLM 不参与选人/评分
+          不会改选人
         </span>
         <span className="inline-flex items-center rounded-md border border-fuchsia-300/30 bg-fuchsia-300/10 px-2 py-1 text-[11px] font-black text-fuchsia-100">
-          Mock explanation
+          稳定演示解释
         </span>
       </div>
 
       {/* Summary — top of the explanation. */}
       <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
-        <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
-          Summary 摘要
+        <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
+          为什么选他
+          <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
+            Summary
+          </span>
         </p>
         <p className="mt-2 text-xs leading-6 text-court-text">
-          {explanation.summary}
+          {sanitizeExplanationText(explanation.summary)}
         </p>
       </div>
 
       {/* Key reasons — list. */}
       {explanation.key_reasons.length > 0 ? (
         <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
-          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
-            Key Reasons 关键理由
+          <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
+            主要原因
+            <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
+              Key Reasons
+            </span>
           </p>
           <ul className="mt-2 grid gap-1.5">
             {explanation.key_reasons.map((reason, index) => (
@@ -2720,7 +2770,7 @@ function ExplanationView({
                 <span aria-hidden="true" className="text-court-line">
                   ·
                 </span>
-                <span>{reason}</span>
+                <span>{sanitizeExplanationText(reason)}</span>
               </li>
             ))}
           </ul>
@@ -2730,11 +2780,14 @@ function ExplanationView({
       {/* Market context — only if present. */}
       {explanation.market_context ? (
         <div className="rounded-md border border-sky-300/20 bg-sky-300/[0.05] p-3">
-          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-sky-200">
-            Market Context 市场上下文
+          <p className="text-[11px] font-black tracking-[0.12em] text-sky-200">
+            市场参考
+            <span className="ml-1.5 text-[10px] font-bold text-sky-200/60">
+              Market Context
+            </span>
           </p>
           <p className="mt-2 text-[11px] leading-5 text-court-text">
-            {explanation.market_context}
+            {sanitizeExplanationText(explanation.market_context)}
           </p>
         </div>
       ) : null}
@@ -2742,11 +2795,14 @@ function ExplanationView({
       {/* Risk summary — warning style if present. */}
       {explanation.risk_summary ? (
         <div className="rounded-md border border-amber-300/30 bg-amber-300/[0.07] p-3">
-          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-amber-200">
-            Risk Summary 风险摘要
+          <p className="text-[11px] font-black tracking-[0.12em] text-amber-200">
+            风险提示
+            <span className="ml-1.5 text-[10px] font-bold text-amber-200/60">
+              Risk Summary
+            </span>
           </p>
           <p className="mt-2 text-[11px] leading-5 text-amber-100">
-            {explanation.risk_summary}
+            {sanitizeExplanationText(explanation.risk_summary)}
           </p>
         </div>
       ) : null}
@@ -2754,8 +2810,11 @@ function ExplanationView({
       {/* Evidence notes — list. */}
       {explanation.evidence_notes.length > 0 ? (
         <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
-          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
-            Evidence Notes 证据说明
+          <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
+            补充依据
+            <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
+              Evidence Notes
+            </span>
           </p>
           <ul className="mt-2 grid gap-1.5">
             {explanation.evidence_notes.map((note, index) => (
@@ -2766,7 +2825,7 @@ function ExplanationView({
                 <span aria-hidden="true" className="text-court-line">
                   ·
                 </span>
-                <span>{note}</span>
+                <span>{sanitizeExplanationText(note)}</span>
               </li>
             ))}
           </ul>
@@ -2775,8 +2834,11 @@ function ExplanationView({
 
       {/* Limitations — must always show; fallback text if empty. */}
       <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
-        <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
-          Limitations 局限说明
+        <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
+          需要注意
+          <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
+            Limitations
+          </span>
         </p>
         {explanation.limitations.length > 0 ? (
           <ul className="mt-2 grid gap-1.5">
@@ -2788,52 +2850,68 @@ function ExplanationView({
                 <span aria-hidden="true" className="text-amber-300">
                   ·
                 </span>
-                <span>{limitation}</span>
+                <span>{sanitizeExplanationText(limitation)}</span>
               </li>
             ))}
           </ul>
         ) : (
           <p className="mt-2 text-[11px] leading-5 text-court-muted">
-            暂无额外限制说明。
+            暂无额外注意事项。
           </p>
         )}
       </div>
 
-      {/* Citation refs — list, enriched with citation metadata when safely matchable. */}
+      {/* Citation refs — user-friendly "参考依据".
+          RAG-v0-M3.2-D: priority is the matched citation's title (or a
+          friendly display label for known source_ids).  The raw source_id
+          is kept as weak small text ("来源标识：...") so it is still
+          available for debugging without dominating the UI.  Unmatched
+          refs never fabricate a title/url — they show "未匹配到来源详情"
+          plus the raw ref as weak small text. */}
       {explanation.citation_refs.length > 0 ? (
         <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
-          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
-            Citation Refs 引用
+          <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
+            参考依据
+            <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
+              Citation Refs
+            </span>
           </p>
-          <div className="mt-2 grid gap-1.5">
+          <div className="mt-2 grid gap-2">
             {explanation.citation_refs.map((ref, index) => {
               const matched = citationLookup.get(ref);
+              const friendlyTitle = CITATION_REF_FRIENDLY_TITLES[ref];
+              const displayTitle = matched?.title ?? friendlyTitle ?? null;
+              const isUnmatched = !matched;
               return (
                 <div
-                  className="flex flex-wrap items-center gap-1.5 text-[10px] font-bold"
+                  className="flex flex-col gap-0.5 text-[11px] leading-5"
                   key={`ref-${index}`}
                 >
-                  <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-court-text">
-                    {ref}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {displayTitle ? (
+                      <span className="font-black text-court-text">
+                        {displayTitle}
+                      </span>
+                    ) : null}
+                    {matched?.url ? (
+                      <a
+                        className="text-sky-200 underline-offset-2 hover:underline"
+                        href={matched.url}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        查看来源
+                      </a>
+                    ) : null}
+                    {isUnmatched ? (
+                      <span className="text-[10px] font-bold text-amber-300/80">
+                        未匹配到来源详情
+                      </span>
+                    ) : null}
+                  </div>
+                  <span className="text-[10px] font-bold text-court-muted/70">
+                    来源标识：{ref}
                   </span>
-                  {matched?.title ? (
-                    <span className="text-court-text">{matched.title}</span>
-                  ) : null}
-                  {matched?.url ? (
-                    <a
-                      className="text-sky-200 underline-offset-2 hover:underline"
-                      href={matched.url}
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      来源
-                    </a>
-                  ) : null}
-                  {!matched ? (
-                    <span className="text-[10px] font-bold text-amber-300/80">
-                      未匹配 citation metadata
-                    </span>
-                  ) : null}
                 </div>
               );
             })}
@@ -2841,16 +2919,21 @@ function ExplanationView({
         </div>
       ) : null}
 
-      {/* Fixed safety notice — always shown. */}
+      {/* Fixed safety notice — always shown.
+          RAG-v0-M3.2-D: copy is user-facing; the "不会改变选中的球员、
+          评分或排序" guarantee is preserved verbatim in meaning. */}
       <div className="rounded-md border border-court-line/30 bg-court-line/[0.06] p-3">
-        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-court-line">
-          Safety 安全文案
+        <p className="text-[10px] font-black tracking-[0.16em] text-court-line">
+          说明
+          <span className="ml-1.5 text-[10px] font-bold text-court-line/60">
+            Safety
+          </span>
         </p>
         <p className="mt-1 text-[11px] leading-5 text-court-text">
           {EXPLANATION_SAFETY_TEXT}
         </p>
         <p className="mt-2 text-[11px] leading-5 text-fuchsia-100">
-          {EXPLANATION_MOCK_BADGE_TEXT}
+          {EXPLANATION_SAFETY_NOTE_TEXT}
         </p>
       </div>
     </div>
