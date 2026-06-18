@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 from sqlalchemy.orm import Session
 
 from app.schemas.evidence import (
@@ -21,6 +24,9 @@ from app.services.manual_note_mapper import manual_note_to_evidence_pair
 from app.services.manual_note_retrieval_service import (
     retrieve_manual_note_documents,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 MARKET_DELTA_CONFLICT_THRESHOLD = 8
@@ -114,9 +120,9 @@ def _append_persisted_manual_notes(
     Safety:
     - Read-only: retrieval never commits/flushes.
     - Evidence-only: output is Literal-locked to ``evidence_only=True``.
-    - Failure-isolated: any exception is swallowed so the caller's evidence
-      package still builds without the persisted notes.  A future milestone
-      may wire structured logging here.
+    - Failure-isolated: any exception is logged at WARNING level then
+      swallowed so the caller's evidence package still builds without the
+      persisted notes.
 
     Retrieval strategy: the retrieval service uses AND logic for its filters,
     but a manual note about a prospect typically only carries ``prospect_id``
@@ -124,10 +130,18 @@ def _append_persisted_manual_notes(
     request-level ``_manual_notes_for_pick`` helper, we issue up to three
     separate retrieval calls — by prospect, by team, by pick — and
     deduplicate by ``source_id`` (which is ``str(record.id)``).
+
+    Logging (RAG-v1-D1-E1):
+    - On success, logs INFO with the final ``attached_count`` (the number of
+      persisted notes actually appended to retrieved_evidence / citations).
+      A zero ``attached_count`` is logged at DEBUG to avoid noise.
+    - On failure, logs WARNING with the failing filter set and the exception
+      type / message.  Sensitive note fields (body / summary / tags / author
+      / source_url / relevance_reason / excerpt / content) are NEVER logged.
     """
     seen_source_ids: set[str] = set()
 
-    retrieval_calls = [
+    retrieval_calls: list[dict[str, Any]] = [
         {"prospect_id": prospect_id},
         {"team_id": team_id},
         {"pick_no": pick_no},
@@ -148,9 +162,21 @@ def _append_persisted_manual_notes(
                 limit=PERSISTED_MANUAL_NOTE_LIMIT,
                 **filters,
             )
-        except Exception:
-            # Swallow retrieval failures: the evidence package must still build.
-            # Future: log this once structured logging is in place.
+        except Exception as exc:
+            # Log the failure at WARNING, then continue so the evidence
+            # package still builds.  Only non-sensitive context is logged.
+            logger.warning(
+                "ManualNote retrieval failed: "
+                "year=%s prospect_id=%s team_id=%s pick_no=%s "
+                "filters=%s exc_type=%s exc_msg=%s",
+                year,
+                prospect_id,
+                team_id,
+                pick_no,
+                filters,
+                type(exc).__name__,
+                str(exc),
+            )
             continue
 
         for document in documents:
@@ -162,6 +188,27 @@ def _append_persisted_manual_notes(
             retrieved, citation = map_evidence_document(document)
             retrieved_evidence.append(retrieved)
             citations.append(citation)
+
+    attached_count = len(seen_source_ids)
+    if attached_count > 0:
+        logger.info(
+            "ManualNote retrieval attached: "
+            "year=%s prospect_id=%s team_id=%s pick_no=%s attached_count=%d",
+            year,
+            prospect_id,
+            team_id,
+            pick_no,
+            attached_count,
+        )
+    else:
+        logger.debug(
+            "ManualNote retrieval attached zero notes: "
+            "year=%s prospect_id=%s team_id=%s pick_no=%s",
+            year,
+            prospect_id,
+            team_id,
+            pick_no,
+        )
 
 
 def _manual_notes_for_pick(

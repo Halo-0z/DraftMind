@@ -365,7 +365,7 @@ def test_manual_note_does_not_change_risk_evidence(db_session: Session) -> None:
 
 
 def test_retrieval_failure_falls_back_silently(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     simulation, pick, _, prospect_id = _build_context(db_session)
     _make_manual_note_record(db_session, prospect_id=prospect_id)
@@ -378,9 +378,10 @@ def test_retrieval_failure_falls_back_silently(
         fail_retrieve,
     )
 
-    package = build_pick_evidence(
-        simulation, pick, db=db_session, retrieve_knowledge=True
-    )
+    with caplog.at_level("WARNING", logger="app.services.evidence_service"):
+        package = build_pick_evidence(
+            simulation, pick, db=db_session, retrieve_knowledge=True
+        )
 
     # The package must still build; no manual_note evidence attached.
     manual_note_evidence = [
@@ -388,6 +389,14 @@ def test_retrieval_failure_falls_back_silently(
     ]
     assert manual_note_evidence == []
     assert package.selected_player_name is not None
+
+    # RAG-v1-D1-E1: retrieval failure must be logged at WARNING.
+    warning_records = [
+        r for r in caplog.records if r.levelname == "WARNING"
+    ]
+    assert len(warning_records) >= 1
+    assert "ManualNote retrieval failed" in caplog.text
+    assert "simulated retrieval failure" in caplog.text
 
 
 def test_does_not_call_ranking_engine(
@@ -557,3 +566,248 @@ def test_persisted_manual_notes_capped_at_five_when_single_retrieval_exceeds(
 
     assert len(manual_in_retrieved) <= PERSISTED_MANUAL_NOTE_LIMIT
     assert len(manual_in_citations) <= PERSISTED_MANUAL_NOTE_LIMIT
+
+
+# ---------------------------------------------------------------------------
+# RAG-v1-D1-E1: Runtime logging tests
+# ---------------------------------------------------------------------------
+
+
+# Sensitive field markers used to verify they never leak into logs.
+_SECRET_BODY = "SECRET_BODY_CONTENT_12345"
+_SECRET_SUMMARY = "SECRET_SUMMARY_CONTENT_67890"
+_SECRET_TAGS = "SECRET_TAG_VALUE_ABCDE"
+_SECRET_AUTHOR = "SECRET_AUTHOR_NAME_XYZ"
+_SECRET_SOURCE_URL = "https://secret.example.test/leaked"
+_SECRET_RELEVANCE_REASON = "SECRET_RELEVANCE_REASON_REASON"
+_SECRET_EXCERPT = "SECRET_EXCERPT_FRAGMENT"
+
+SENSITIVE_MARKERS = [
+    _SECRET_BODY,
+    _SECRET_SUMMARY,
+    _SECRET_TAGS,
+    _SECRET_AUTHOR,
+    _SECRET_SOURCE_URL,
+    _SECRET_RELEVANCE_REASON,
+    _SECRET_EXCERPT,
+]
+
+
+def _make_sensitive_note(db_session: Session, *, prospect_id: int) -> ManualNoteRecord:
+    """Create a ManualNoteRecord whose sensitive fields carry unique markers
+    so tests can assert the markers never appear in logs."""
+    return _make_manual_note_record(
+        db_session,
+        prospect_id=prospect_id,
+        title="Public title (not sensitive)",
+        body=_SECRET_BODY,
+        summary=_SECRET_SUMMARY,
+        tags=_SECRET_TAGS,
+        author=_SECRET_AUTHOR,
+        source_url=_SECRET_SOURCE_URL,
+        relevance_reason=_SECRET_RELEVANCE_REASON,
+    )
+
+
+def test_retrieval_success_logs_attached_count(
+    db_session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When retrieval succeeds and appends notes, an INFO log with
+    attached_count must be emitted."""
+    simulation, pick, _, prospect_id = _build_context(db_session)
+    _make_manual_note_record(db_session, prospect_id=prospect_id, title="Note A")
+    _make_manual_note_record(db_session, prospect_id=prospect_id, title="Note B")
+
+    with caplog.at_level("INFO", logger="app.services.evidence_service"):
+        package = build_pick_evidence(
+            simulation, pick, db=db_session, retrieve_knowledge=True
+        )
+
+    manual_count = sum(
+        1 for e in package.retrieved_evidence if e.source_type == "manual_note"
+    )
+    assert manual_count == 2
+
+    info_records = [r for r in caplog.records if r.levelname == "INFO"]
+    assert any("ManualNote retrieval attached" in r.getMessage() for r in info_records)
+    assert any("attached_count=2" in r.getMessage() for r in info_records)
+
+
+def test_retrieval_success_logs_do_not_contain_sensitive_fields(
+    db_session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Sensitive note fields must never appear in logs, even on success."""
+    simulation, pick, _, prospect_id = _build_context(db_session)
+    _make_sensitive_note(db_session, prospect_id=prospect_id)
+
+    with caplog.at_level("INFO", logger="app.services.evidence_service"):
+        build_pick_evidence(
+            simulation, pick, db=db_session, retrieve_knowledge=True
+        )
+
+    for marker in SENSITIVE_MARKERS:
+        assert marker not in caplog.text, (
+            f"Sensitive marker {marker!r} leaked into logs: {caplog.text!r}"
+        )
+
+
+def test_retrieval_failure_logs_do_not_contain_sensitive_fields(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Sensitive note fields must never appear in failure logs either."""
+    simulation, pick, _, prospect_id = _build_context(db_session)
+    _make_sensitive_note(db_session, prospect_id=prospect_id)
+
+    def fail_retrieve(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("simulated retrieval failure")
+
+    monkeypatch.setattr(
+        "app.services.evidence_service.retrieve_manual_note_documents",
+        fail_retrieve,
+    )
+
+    with caplog.at_level("WARNING", logger="app.services.evidence_service"):
+        build_pick_evidence(
+            simulation, pick, db=db_session, retrieve_knowledge=True
+        )
+
+    for marker in SENSITIVE_MARKERS:
+        assert marker not in caplog.text, (
+            f"Sensitive marker {marker!r} leaked into failure logs: {caplog.text!r}"
+        )
+
+
+def test_retrieval_failure_still_returns_valid_package(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When all retrieval calls fail, build_pick_evidence must still return
+    a valid package (fallback semantics preserved)."""
+    simulation, pick, _, prospect_id = _build_context(db_session)
+    _make_manual_note_record(db_session, prospect_id=prospect_id)
+
+    call_count = 0
+
+    def fail_retrieve(*args: object, **kwargs: object) -> None:
+        nonlocal call_count
+        call_count += 1
+        raise RuntimeError(f"failure #{call_count}")
+
+    monkeypatch.setattr(
+        "app.services.evidence_service.retrieve_manual_note_documents",
+        fail_retrieve,
+    )
+
+    with caplog.at_level("WARNING", logger="app.services.evidence_service"):
+        package = build_pick_evidence(
+            simulation, pick, db=db_session, retrieve_knowledge=True
+        )
+
+    # Package still builds.
+    assert package.selected_player_name is not None
+    assert package.decision_locked is True
+    manual_note_evidence = [
+        e for e in package.retrieved_evidence if e.source_type == "manual_note"
+    ]
+    assert manual_note_evidence == []
+
+    # All three retrieval calls failed and were logged.
+    warning_records = [
+        r for r in caplog.records if r.levelname == "WARNING"
+    ]
+    assert len(warning_records) == 3
+    assert call_count == 3
+
+
+def test_no_retrieval_logs_when_flag_false(
+    db_session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When retrieve_knowledge=False (default), no retrieval logs at all."""
+    simulation, pick, _, prospect_id = _build_context(db_session)
+    _make_manual_note_record(db_session, prospect_id=prospect_id)
+
+    with caplog.at_level("DEBUG", logger="app.services.evidence_service"):
+        build_pick_evidence(simulation, pick)
+
+    retrieval_log_text = caplog.text
+    assert "ManualNote retrieval" not in retrieval_log_text
+    assert "attached_count" not in retrieval_log_text
+
+
+def test_no_retrieval_logs_when_db_none(
+    db_session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When db=None, no retrieval logs at all (even if retrieve_knowledge=True)."""
+    simulation, pick, _, prospect_id = _build_context(db_session)
+    _make_manual_note_record(db_session, prospect_id=prospect_id)
+
+    with caplog.at_level("DEBUG", logger="app.services.evidence_service"):
+        build_pick_evidence(
+            simulation, pick, db=None, retrieve_knowledge=True
+        )
+
+    retrieval_log_text = caplog.text
+    assert "ManualNote retrieval" not in retrieval_log_text
+    assert "attached_count" not in retrieval_log_text
+
+
+def test_retrieval_success_log_includes_context_fields(
+    db_session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The INFO log must include year / prospect_id / team_id / pick_no for
+    operator traceability."""
+    simulation, pick, team_id, prospect_id = _build_context(db_session)
+    _make_manual_note_record(db_session, prospect_id=prospect_id)
+
+    with caplog.at_level("INFO", logger="app.services.evidence_service"):
+        build_pick_evidence(
+            simulation, pick, db=db_session, retrieve_knowledge=True
+        )
+
+    info_records = [r for r in caplog.records if r.levelname == "INFO"]
+    assert len(info_records) >= 1
+    msg = info_records[-1].getMessage()
+    assert "year=2026" in msg
+    assert f"prospect_id={prospect_id}" in msg
+    assert f"team_id={team_id}" in msg
+    assert "pick_no=5" in msg
+
+
+def test_retrieval_failure_log_includes_context_fields(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The WARNING log must include year / prospect_id / team_id / pick_no /
+    filters / exc_type / exc_msg for operator traceability."""
+    simulation, pick, team_id, prospect_id = _build_context(db_session)
+
+    def fail_retrieve(*args: object, **kwargs: object) -> None:
+        raise ValueError("custom error for test")
+
+    monkeypatch.setattr(
+        "app.services.evidence_service.retrieve_manual_note_documents",
+        fail_retrieve,
+    )
+
+    with caplog.at_level("WARNING", logger="app.services.evidence_service"):
+        build_pick_evidence(
+            simulation, pick, db=db_session, retrieve_knowledge=True
+        )
+
+    warning_records = [
+        r for r in caplog.records if r.levelname == "WARNING"
+    ]
+    assert len(warning_records) >= 1
+    msg = warning_records[0].getMessage()
+    assert "year=2026" in msg
+    assert f"prospect_id={prospect_id}" in msg
+    assert f"team_id={team_id}" in msg
+    assert "pick_no=5" in msg
+    assert "exc_type=ValueError" in msg
+    assert "custom error for test" in msg
+    # filters should mention which retrieval call failed
+    assert "prospect_id" in msg or "team_id" in msg or "pick_no" in msg
