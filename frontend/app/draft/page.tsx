@@ -204,13 +204,62 @@ function formatProjectionSource(source: string): string {
   const labels: Record<string, string> = {
     manual_projection: "手动预测",
     seed_projection: "示例预测",
-    consensus_reference: "媒体参考",
+    consensus_reference: "球员选秀预测",
     manual_prediction: "手动倾向",
     team_report: "球队报道",
     workout_signal: "试训信号",
-    consensus_mock: "媒体模拟",
+    consensus_mock: "球队选择预测",
+    market_projection: "球员选秀预测",
+    team_projection: "球队选择预测",
+    structured_simulation: "结构化模拟系统",
   };
   return labels[source] ?? source.replaceAll("_", " ");
+}
+
+function formatDecisionSource(source: string | null | undefined): string {
+  if (!source) {
+    return "结构化系统";
+  }
+  return formatProjectionSource(source);
+}
+
+function formatSufficiencyLevel(level: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    strong: "充足",
+    medium: "一般",
+    moderate: "一般",
+    weak: "不足",
+    limited: "有限",
+    insufficient: "不足",
+  };
+  if (!level) {
+    return "未说明";
+  }
+  return labels[level.toLowerCase()] ?? level;
+}
+
+function formatEvidenceSourceLabel(source: string | null | undefined): string {
+  if (!source) {
+    return "证据来源";
+  }
+  return formatProjectionSource(source);
+}
+
+function formatCitationTitle(citation: EvidenceCitation): string {
+  const source =
+    citation.evidence_source_type ?? citation.source_type ?? citation.source_id;
+  const sourceLabel = formatEvidenceSourceLabel(source);
+  const titleLabels: Record<string, string> = {
+    "Prospect draft projection": "球员选秀预测",
+    "Team pick projection": "球队选择预测",
+  };
+  if (citation.title && titleLabels[citation.title]) {
+    return titleLabels[citation.title];
+  }
+  if (sourceLabel !== "证据来源") {
+    return sourceLabel;
+  }
+  return citation.title ?? "参考来源";
 }
 
 function marketAlignmentLabel(label: string): string {
@@ -2309,22 +2358,22 @@ function EvidencePackageView({ evidence }: { evidence: PickEvidencePackage }) {
           决策已锁定
         </span>
         <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
-          LLM 可改写决策：否
+          解释不改结果
         </span>
         <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
-          决策来源：{evidence.decision_source}
+          决策来源：{formatDecisionSource(evidence.decision_source)}
         </span>
       </div>
 
       {ranking ? (
         <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
-          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
-            Ranking Evidence
+          <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
+            评分依据
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             {ranking.final_score !== undefined && ranking.final_score !== null ? (
               <span className="inline-flex items-center rounded-md border border-court-line/30 bg-court-line/10 px-2 py-1 text-[11px] font-black text-court-line">
-                Final {ranking.final_score}
+                综合评分 {ranking.final_score}
               </span>
             ) : null}
             {ranking.prediction_sort_score !== undefined &&
@@ -2388,7 +2437,7 @@ function EvidencePackageView({ evidence }: { evidence: PickEvidencePackage }) {
       {risk && (risk.risk_flags?.length || risk.diagnostics_warnings?.length) ? (
         <div className="rounded-md border border-amber-300/30 bg-amber-300/[0.07] p-3">
           <p className="text-[11px] font-black uppercase tracking-[0.12em] text-amber-200">
-            Risk Evidence
+            风险提示
           </p>
           <ul className="mt-2 grid gap-1 text-[11px] font-bold leading-5 text-amber-100">
             {(risk.risk_flags ?? []).map((flag, index) => (
@@ -2404,7 +2453,7 @@ function EvidencePackageView({ evidence }: { evidence: PickEvidencePackage }) {
       {conflict && (conflict.market_delta_conflict || conflict.notes?.length) ? (
         <div className="rounded-md border border-red-300/30 bg-red-300/[0.07] p-3">
           <p className="text-[11px] font-black uppercase tracking-[0.12em] text-red-200">
-            Conflict Evidence
+            分歧提示
           </p>
           <ul className="mt-2 grid gap-1 text-[11px] font-bold leading-5 text-red-100">
             {conflict.market_delta_conflict ? (
@@ -2419,13 +2468,13 @@ function EvidencePackageView({ evidence }: { evidence: PickEvidencePackage }) {
 
       {sufficiency ? (
         <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
-          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
-            Evidence Sufficiency
+          <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
+            证据完整度
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             {sufficiency.level ? (
               <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-bold text-court-text">
-                等级 {sufficiency.level}
+                等级 {formatSufficiencyLevel(sufficiency.level)}
               </span>
             ) : null}
             {sufficiency.missing_fields && sufficiency.missing_fields.length > 0 ? (
@@ -2447,8 +2496,8 @@ function RetrievedEvidenceList({ items }: { items: RetrievedEvidence[] }) {
   if (items.length === 0) {
     return (
       <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
-        <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
-          Retrieved Evidence
+        <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
+          补充证据
         </p>
         <p className="mt-2 text-[11px] leading-5 text-court-muted">
           暂无人工备注或外部检索证据；当前仅展示结构化证据。
@@ -2459,8 +2508,8 @@ function RetrievedEvidenceList({ items }: { items: RetrievedEvidence[] }) {
 
   return (
     <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
-      <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
-        Retrieved Evidence
+      <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
+        补充证据
       </p>
       <div className="mt-2 grid gap-2">
         {items.map((item, index) => {
@@ -2477,7 +2526,7 @@ function RetrievedEvidenceList({ items }: { items: RetrievedEvidence[] }) {
                   </span>
                 ) : (
                   <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-court-text">
-                    {item.source_type}
+                    {formatEvidenceSourceLabel(item.source_type)}
                   </span>
                 )}
                 {item.confidence !== undefined && item.confidence !== null ? (
@@ -2493,7 +2542,7 @@ function RetrievedEvidenceList({ items }: { items: RetrievedEvidence[] }) {
               </div>
               {item.title ? (
                 <p className="mt-1 text-[11px] font-black text-court-text">
-                  {item.title}
+                  {sanitizeExplanationText(item.title)}
                 </p>
               ) : null}
               <p className="mt-1 text-[11px] leading-5 text-court-muted">
@@ -2519,45 +2568,52 @@ function CitationList({ citations }: { citations: EvidenceCitation[] }) {
 
   return (
     <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
-      <p className="text-[11px] font-black uppercase tracking-[0.12em] text-court-line">
-        Citations
+      <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
+        参考来源
       </p>
-      <div className="mt-2 grid gap-1.5">
+      <div className="mt-2 grid gap-2">
         {citations.map((citation, index) => {
           const isManualNote =
             citation.evidence_source_type === "manual_note";
+          const title = formatCitationTitle(citation);
+          const sourceId = citation.source_id;
           return (
             <div
-              className="flex flex-wrap items-center gap-1.5 text-[10px] font-bold"
+              className="flex flex-col gap-0.5 text-[11px] leading-5"
               key={`citation-${index}`}
             >
-              {isManualNote ? (
-                <span className="inline-flex items-center rounded-md border border-fuchsia-300/40 bg-fuchsia-300/10 px-2 py-0.5 text-[10px] font-black text-fuchsia-100">
-                  人工备注｜只读证据，不参与评分
+              <div className="flex flex-wrap items-center gap-1.5">
+                {isManualNote ? (
+                  <span className="inline-flex items-center rounded-md border border-fuchsia-300/40 bg-fuchsia-300/10 px-2 py-0.5 text-[10px] font-black text-fuchsia-100">
+                    人工备注｜只读证据，不参与评分
+                  </span>
+                ) : null}
+                <span className="font-black text-court-text">{title}</span>
+                {citation.url ? (
+                  <a
+                    className="text-sky-200 underline-offset-2 hover:underline"
+                    href={citation.url}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    查看来源
+                  </a>
+                ) : null}
+              </div>
+              {sourceId ? (
+                <span className="text-[10px] font-bold text-court-muted/70">
+                  参考编号：{sourceId}
                 </span>
-              ) : (
-                <span className="inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-court-text">
-                  {citation.evidence_source_type ?? citation.source_type ?? "source"}
+              ) : null}
+              {citation.title && citation.title !== title ? (
+                <span className="text-[10px] font-bold text-court-muted/70">
+                  原始来源：{citation.title}
                 </span>
-              )}
-              {citation.title ? (
-                <span className="text-court-text">{citation.title}</span>
               ) : null}
-              {citation.author ? (
-                <span className="text-court-muted">· {citation.author}</span>
-              ) : null}
-              {citation.date ? (
-                <span className="text-court-muted">· {citation.date}</span>
-              ) : null}
-              {citation.url ? (
-                <a
-                  className="text-sky-200 underline-offset-2 hover:underline"
-                  href={citation.url}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  来源
-                </a>
+              {citation.author || citation.date ? (
+                <span className="text-[10px] font-bold text-court-muted/70">
+                  {[citation.author, citation.date].filter(Boolean).join(" · ")}
+                </span>
               ) : null}
             </div>
           );
@@ -2871,12 +2927,9 @@ function ExplanationView({
       </div>
 
       {/* Citation refs — user-friendly "参考依据".
-          RAG-v0-M3.2-D: priority is the matched citation's title (or a
-          friendly display label for known source_ids).  The raw source_id
-          is kept as weak small text ("来源标识：...") so it is still
-          available for debugging without dominating the UI.  Unmatched
-          refs never fabricate a title/url — they show "未匹配到来源详情"
-          plus the raw ref as weak small text. */}
+          RAG-v0-M3.2-D: friendly display labels for known source_ids take
+          priority over backend citation titles, so users see plain Chinese.
+          Matched citation titles are kept as weak "原始来源" metadata. */}
       {explanation.citation_refs.length > 0 ? (
         <div className="rounded-md border border-white/10 bg-court-black/60 p-3">
           <p className="text-[11px] font-black tracking-[0.12em] text-court-line">
@@ -2889,7 +2942,7 @@ function ExplanationView({
             {explanation.citation_refs.map((ref, index) => {
               const matched = citationLookup.get(ref);
               const friendlyTitle = CITATION_REF_FRIENDLY_TITLES[ref];
-              const displayTitle = matched?.title ?? friendlyTitle ?? null;
+              const displayTitle = friendlyTitle ?? matched?.title ?? null;
               const isUnmatched = !matched;
               return (
                 <div
@@ -2919,8 +2972,13 @@ function ExplanationView({
                     ) : null}
                   </div>
                   <span className="text-[10px] font-bold text-court-muted/70">
-                    来源标识：{ref}
+                    参考编号：{ref}
                   </span>
+                  {matched?.title && friendlyTitle ? (
+                    <span className="text-[10px] font-bold text-court-muted/70">
+                      原始来源：{matched.title}
+                    </span>
+                  ) : null}
                 </div>
               );
             })}
