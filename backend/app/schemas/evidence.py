@@ -198,3 +198,57 @@ class PickExplanation(BaseModel):
     evidence_notes: list[str] = Field(default_factory=list, max_length=6)
     citation_refs: list[str] = Field(default_factory=list, max_length=10)
     limitations: list[str] = Field(default_factory=list, max_length=5)
+
+
+# RAG-v1-B1: EvidenceDocumentRead — read-only knowledge source contract.
+#
+# This schema is the unified read shape for future knowledge sources
+# (ScoutingReport / NewsArticle / ManualNote DB rows).  It is deliberately
+# display-only and retrieval-only:
+#
+# - ``evidence_only`` is Literal-locked to ``True`` so any consumer can tell
+#   at the type level that this document must never feed back into scoring,
+#   selection, or ranking.
+# - There are no fields for replacement players, reranking, score overrides,
+#   or selection overrides.
+# - ``excerpt`` is required (mirrors ``RetrievedEvidence.excerpt``) so the
+#   document always carries a human-readable snippet for the evidence panel.
+# - ``title`` is optional because some sources (e.g. raw ScoutingReport rows)
+#   may not have a dedicated title column; callers can derive one.
+#
+# This schema does NOT touch ``PickEvidencePackage`` / ``PickExplanation``
+# behavior.  It is only consumed by ``evidence_document_mapper`` to produce
+# ``RetrievedEvidence`` / ``EvidenceCitation`` instances.
+
+
+class EvidenceDocumentRead(BaseModel):
+    source_type: str
+    source_id: str | None = None
+
+    entity_type: str | None = None
+    entity_id: int | str | None = None
+
+    prospect_id: int | None = None
+    prospect_name: str | None = None
+    team_id: int | None = None
+    team_abbr: str | None = None
+    year: int | None = Field(default=None, ge=1900, le=2100)
+
+    title: str | None = None
+    excerpt: str
+    url: str | None = None
+
+    source_name: str | None = None
+    publisher: str | None = None
+    author: str | None = None
+    published_at: str | None = None
+
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    retrieval_score: float | None = Field(default=None, ge=0)
+    freshness_days: int | None = Field(default=None, ge=0)
+
+    relevance_reason: str | None = None
+    conflict_note: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+    evidence_only: Literal[True] = True
