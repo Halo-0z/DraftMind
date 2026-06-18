@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from sqlalchemy.orm import Session
+
 from app.schemas.evidence import (
     ConflictEvidence,
     EvidenceCitation,
@@ -14,10 +16,18 @@ from app.schemas.evidence import (
 )
 from app.schemas.recommendation import RankedProspectRead
 from app.schemas.simulation import SimulateResponse, SimulatedPickRead
+from app.services.evidence_document_mapper import map_evidence_document
 from app.services.manual_note_mapper import manual_note_to_evidence_pair
+from app.services.manual_note_retrieval_service import (
+    retrieve_manual_note_documents,
+)
 
 
 MARKET_DELTA_CONFLICT_THRESHOLD = 8
+
+# RAG-v1-D1-A: max persisted manual notes to attach per pick when retrieval
+# is enabled.  Kept small to avoid flooding the evidence panel.
+PERSISTED_MANUAL_NOTE_LIMIT = 5
 
 
 def build_pick_evidence(
@@ -25,6 +35,8 @@ def build_pick_evidence(
     pick: SimulatedPickRead,
     *,
     manual_notes: list[ManualNote] | None = None,
+    db: Session | None = None,
+    retrieve_knowledge: bool = False,
 ) -> PickEvidencePackage:
     selected = pick.selected_player
     ranking_evidence = _build_ranking_evidence(pick)
@@ -49,6 +61,23 @@ def build_pick_evidence(
         retrieved_evidence.append(retrieved)
         citations.append(citation)
 
+    # RAG-v1-D1-A: optionally attach persisted ManualNote knowledge sources.
+    # Default is OFF (db=None, retrieve_knowledge=False) so existing callers
+    # are unaffected.  When enabled, retrieval is read-only and evidence-only;
+    # it only appends to retrieved_evidence / citations and never touches
+    # decision / scoring / ranking fields.  Failures are swallowed so the
+    # evidence package still builds without the persisted notes.
+    if db is not None and retrieve_knowledge:
+        _append_persisted_manual_notes(
+            retrieved_evidence=retrieved_evidence,
+            citations=citations,
+            db=db,
+            year=simulation.year,
+            prospect_id=selected.prospect.id,
+            team_id=pick.team.id,
+            pick_no=pick.pick,
+        )
+
     return PickEvidencePackage(
         pick_number=pick.pick,
         team_abbr=pick.team.abbr,
@@ -68,6 +97,71 @@ def build_pick_evidence(
         citations=citations,
         retrieved_evidence=retrieved_evidence,
     )
+
+
+def _append_persisted_manual_notes(
+    *,
+    retrieved_evidence: list[RetrievedEvidence],
+    citations: list[EvidenceCitation],
+    db: Session,
+    year: int,
+    prospect_id: int,
+    team_id: int,
+    pick_no: int,
+) -> None:
+    """Retrieve persisted ManualNote rows and append them as evidence.
+
+    Safety:
+    - Read-only: retrieval never commits/flushes.
+    - Evidence-only: output is Literal-locked to ``evidence_only=True``.
+    - Failure-isolated: any exception is swallowed so the caller's evidence
+      package still builds without the persisted notes.  A future milestone
+      may wire structured logging here.
+
+    Retrieval strategy: the retrieval service uses AND logic for its filters,
+    but a manual note about a prospect typically only carries ``prospect_id``
+    (not ``team_id`` / ``pick_no``).  To match the OR semantics of the
+    request-level ``_manual_notes_for_pick`` helper, we issue up to three
+    separate retrieval calls — by prospect, by team, by pick — and
+    deduplicate by ``source_id`` (which is ``str(record.id)``).
+    """
+    seen_source_ids: set[str] = set()
+
+    retrieval_calls = [
+        {"prospect_id": prospect_id},
+        {"team_id": team_id},
+        {"pick_no": pick_no},
+    ]
+
+    for filters in retrieval_calls:
+        # Global cap: stop once we have appended PERSISTED_MANUAL_NOTE_LIMIT
+        # documents across all retrieval calls.  This guarantees the total
+        # persisted manual notes per PickEvidencePackage never exceeds the
+        # limit, regardless of how many matches each retrieval call returns.
+        if len(seen_source_ids) >= PERSISTED_MANUAL_NOTE_LIMIT:
+            break
+
+        try:
+            documents = retrieve_manual_note_documents(
+                db,
+                year=year,
+                limit=PERSISTED_MANUAL_NOTE_LIMIT,
+                **filters,
+            )
+        except Exception:
+            # Swallow retrieval failures: the evidence package must still build.
+            # Future: log this once structured logging is in place.
+            continue
+
+        for document in documents:
+            if len(seen_source_ids) >= PERSISTED_MANUAL_NOTE_LIMIT:
+                break
+            if document.source_id in seen_source_ids:
+                continue
+            seen_source_ids.add(document.source_id)
+            retrieved, citation = map_evidence_document(document)
+            retrieved_evidence.append(retrieved)
+            citations.append(citation)
 
 
 def _manual_notes_for_pick(
