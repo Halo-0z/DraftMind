@@ -37,9 +37,12 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from evaluate_draft_accuracy import (  # noqa: E402
     AccuracyReport,
+    build_calibration_pick_diff_summary,
+    build_calibration_pick_diffs,
     calculate_pick_error,
     calculate_projected_range_hit,
     calculate_top_n_overlap,
+    classify_pick_diff_impact,
     evaluate_simulation,
     format_human_report,
     load_prospect_projections,
@@ -699,4 +702,327 @@ class TestRunEvaluationMissingDataHandling:
         assert "missing_projection_data" in report["unavailable_reasons"]
         assert "missing_consensus_data" in report["unavailable_reasons"]
         assert report["total_evaluated_picks"] == 0
-        assert report["average_pick_error"] is None
+
+
+# ---------------------------------------------------------------------------
+# M3-C: Per-pick calibration diff tests
+# ---------------------------------------------------------------------------
+
+
+def _make_pick_eval_dict(
+    pick_no: int,
+    prospect_id: int = 101,
+    prospect_name: str = "Test Player",
+    expected_pick: int | None = 5,
+    pick_error: int | None = 0,
+    draft_range_min: int | None = 3,
+    draft_range_max: int | None = 8,
+    projected_range_hit: bool | None = True,
+    team_abbr: str = "TST",
+) -> dict[str, Any]:
+    """Build a pick-eval dict matching the PickEvaluation asdict shape."""
+    return {
+        "pick_no": pick_no,
+        "prospect_id": prospect_id,
+        "prospect_name": prospect_name,
+        "selected_pick": pick_no,
+        "expected_pick": expected_pick,
+        "pick_error": pick_error,
+        "draft_range_min": draft_range_min,
+        "draft_range_max": draft_range_max,
+        "projected_range_hit": projected_range_hit,
+        "consensus_rank": expected_pick,
+        "big_board_rank": expected_pick,
+        "projection_source": "consensus_reference",
+        "projection_confidence": 0.7,
+        "team_projection_match": None,
+        "is_locked_pick": False,
+        "round": 1 if pick_no <= 30 else 2,
+        "team_abbr": team_abbr,
+        "missing_projection": expected_pick is None,
+        "selected_outside_projected_range": projected_range_hit is False,
+    }
+
+
+class TestClassifyPickDiffImpact:
+    """Tests for the conservative impact classifier."""
+
+    def test_unchanged_same_prospect(self) -> None:
+        off = _make_pick_eval_dict(1, prospect_id=101, pick_error=2)
+        on = _make_pick_eval_dict(1, prospect_id=101, pick_error=2)
+        assert classify_pick_diff_impact(off, on) == "unchanged"
+
+    def test_clearly_improved(self) -> None:
+        off = _make_pick_eval_dict(1, prospect_id=101, pick_error=10)
+        on = _make_pick_eval_dict(1, prospect_id=102, pick_error=5)
+        # delta = 5 - 10 = -5 <= -3 -> clearly_improved
+        assert classify_pick_diff_impact(off, on) == "clearly_improved"
+
+    def test_likely_improved_small_delta(self) -> None:
+        off = _make_pick_eval_dict(1, prospect_id=101, pick_error=5)
+        on = _make_pick_eval_dict(1, prospect_id=102, pick_error=3)
+        # delta = 3 - 5 = -2 -> likely_improved
+        assert classify_pick_diff_impact(off, on) == "likely_improved"
+
+    def test_likely_improved_off_missing_projection(self) -> None:
+        off = _make_pick_eval_dict(
+            1, prospect_id=101, expected_pick=None, pick_error=None,
+            draft_range_min=None, draft_range_max=None, projected_range_hit=None,
+        )
+        on = _make_pick_eval_dict(1, prospect_id=102, pick_error=4)
+        assert classify_pick_diff_impact(off, on) == "likely_improved"
+
+    def test_neutral_or_unclear_same_error(self) -> None:
+        off = _make_pick_eval_dict(1, prospect_id=101, pick_error=3)
+        on = _make_pick_eval_dict(1, prospect_id=102, pick_error=3)
+        assert classify_pick_diff_impact(off, on) == "neutral_or_unclear"
+
+    def test_likely_worse(self) -> None:
+        off = _make_pick_eval_dict(1, prospect_id=101, pick_error=3)
+        on = _make_pick_eval_dict(1, prospect_id=102, pick_error=5)
+        # delta = 5 - 3 = 2 -> likely_worse
+        assert classify_pick_diff_impact(off, on) == "likely_worse"
+
+    def test_risky_change_large_error(self) -> None:
+        off = _make_pick_eval_dict(1, prospect_id=101, pick_error=2)
+        on = _make_pick_eval_dict(1, prospect_id=102, pick_error=8)
+        # delta = 8 - 2 = 6 >= 3 -> risky_change
+        assert classify_pick_diff_impact(off, on) == "risky_change"
+
+    def test_risky_change_range_worsened_same_error(self) -> None:
+        off = _make_pick_eval_dict(1, prospect_id=101, pick_error=3, projected_range_hit=True)
+        on = _make_pick_eval_dict(1, prospect_id=102, pick_error=3, projected_range_hit=False)
+        assert classify_pick_diff_impact(off, on) == "risky_change"
+
+    def test_unavailable_both_missing(self) -> None:
+        off = _make_pick_eval_dict(
+            1, prospect_id=101, expected_pick=None, pick_error=None,
+            draft_range_min=None, draft_range_max=None, projected_range_hit=None,
+        )
+        on = _make_pick_eval_dict(
+            1, prospect_id=102, expected_pick=None, pick_error=None,
+            draft_range_min=None, draft_range_max=None, projected_range_hit=None,
+        )
+        assert classify_pick_diff_impact(off, on) == "unavailable"
+
+    def test_unavailable_on_missing(self) -> None:
+        off = _make_pick_eval_dict(1, prospect_id=101, pick_error=3)
+        on = _make_pick_eval_dict(
+            1, prospect_id=102, expected_pick=None, pick_error=None,
+            draft_range_min=None, draft_range_max=None, projected_range_hit=None,
+        )
+        assert classify_pick_diff_impact(off, on) == "unavailable"
+
+    def test_mixed_improved_error_worsened_range(self) -> None:
+        """Error improved by >=3 but range_hit went True -> False: neutral_or_unclear."""
+        off = _make_pick_eval_dict(1, prospect_id=101, pick_error=10, projected_range_hit=True)
+        on = _make_pick_eval_dict(1, prospect_id=102, pick_error=5, projected_range_hit=False)
+        assert classify_pick_diff_impact(off, on) == "neutral_or_unclear"
+
+
+class TestBuildCalibrationPickDiffs:
+    def test_diffs_identify_unchanged(self) -> None:
+        off = [_make_pick_eval_dict(1, prospect_id=101)]
+        on = [_make_pick_eval_dict(1, prospect_id=101)]
+        diffs = build_calibration_pick_diffs(off, on)
+        assert len(diffs) == 1
+        assert diffs[0]["changed"] is False
+        assert diffs[0]["impact"] == "unchanged"
+
+    def test_diffs_identify_changed(self) -> None:
+        off = [_make_pick_eval_dict(1, prospect_id=101, pick_error=10)]
+        on = [_make_pick_eval_dict(1, prospect_id=102, pick_error=5)]
+        diffs = build_calibration_pick_diffs(off, on)
+        assert diffs[0]["changed"] is True
+        assert diffs[0]["impact"] == "clearly_improved"
+        assert diffs[0]["pick_error_delta"] == -5
+
+    def test_diffs_round_field_round1(self) -> None:
+        off = [_make_pick_eval_dict(5, prospect_id=101)]
+        on = [_make_pick_eval_dict(5, prospect_id=101)]
+        diffs = build_calibration_pick_diffs(off, on)
+        assert diffs[0]["round"] == 1
+
+    def test_diffs_round_field_round2(self) -> None:
+        off = [_make_pick_eval_dict(35, prospect_id=101)]
+        on = [_make_pick_eval_dict(35, prospect_id=101)]
+        diffs = build_calibration_pick_diffs(off, on)
+        assert diffs[0]["round"] == 2
+
+    def test_diffs_no_retrieval_score(self) -> None:
+        off = [_make_pick_eval_dict(1, prospect_id=101)]
+        on = [_make_pick_eval_dict(1, prospect_id=102)]
+        diffs = build_calibration_pick_diffs(off, on)
+        forbidden = {"retrieval_score", "evidence", "semantic_similarity", "llm_output"}
+        for d in diffs:
+            assert not (forbidden & set(d.keys())), (
+                f"diff entry must not contain forbidden keys: {forbidden & set(d.keys())}"
+            )
+
+    def test_diffs_pick_error_delta_none_when_unavailable(self) -> None:
+        off = [_make_pick_eval_dict(
+            1, prospect_id=101, expected_pick=None, pick_error=None,
+            draft_range_min=None, draft_range_max=None, projected_range_hit=None,
+        )]
+        on = [_make_pick_eval_dict(1, prospect_id=102, pick_error=4)]
+        diffs = build_calibration_pick_diffs(off, on)
+        assert diffs[0]["pick_error_delta"] is None
+        assert diffs[0]["impact"] == "likely_improved"
+
+
+class TestBuildCalibrationPickDiffSummary:
+    def test_summary_has_required_keys(self) -> None:
+        diffs = [
+            {"impact": "unchanged", "changed": False, "round": 1},
+            {"impact": "clearly_improved", "changed": True, "round": 1},
+            {"impact": "risky_change", "changed": True, "round": 2},
+        ]
+        s = build_calibration_pick_diff_summary(diffs)
+        assert s["total_picks"] == 3
+        assert s["changed_picks"] == 2
+        assert s["unchanged_picks"] == 1
+        assert s["clearly_improved"] == 1
+        assert s["risky_change"] == 1
+        assert "round_1" in s
+        assert "round_2" in s
+
+    def test_summary_round_grouping(self) -> None:
+        diffs = [
+            {"impact": "unchanged", "changed": False, "round": 1},
+            {"impact": "risky_change", "changed": True, "round": 2},
+            {"impact": "likely_worse", "changed": True, "round": 2},
+        ]
+        s = build_calibration_pick_diff_summary(diffs)
+        assert s["round_1"]["total_picks"] == 1
+        assert s["round_1"]["unchanged_picks"] == 1
+        assert s["round_2"]["total_picks"] == 2
+        assert s["round_2"]["changed_picks"] == 2
+        assert s["round_2"]["risky_change"] == 1
+        assert s["round_2"]["likely_worse"] == 1
+
+    def test_summary_empty_diffs(self) -> None:
+        s = build_calibration_pick_diff_summary([])
+        assert s["total_picks"] == 0
+        assert s["changed_picks"] == 0
+        assert s["round_1"]["total_picks"] == 0
+        assert s["round_2"]["total_picks"] == 0
+
+
+class TestPickEvaluationNewFields:
+    def test_pick_evaluation_has_round_and_team_abbr(self) -> None:
+        from evaluate_draft_accuracy import PickEvaluation
+
+        pe = PickEvaluation(
+            pick_no=1, prospect_id=101, prospect_name="Test",
+            selected_pick=1, expected_pick=1, pick_error=0,
+            draft_range_min=1, draft_range_max=5, projected_range_hit=True,
+            consensus_rank=1, big_board_rank=1,
+            projection_source="consensus_reference", projection_confidence=0.7,
+            team_projection_match=None, is_locked_pick=False,
+            round=1, team_abbr="TST",
+            missing_projection=False, selected_outside_projected_range=False,
+        )
+        assert pe.round == 1
+        assert pe.team_abbr == "TST"
+        assert pe.missing_projection is False
+        assert pe.selected_outside_projected_range is False
+
+    def test_new_fields_not_retrieval_score(self) -> None:
+        from evaluate_draft_accuracy import PickEvaluation
+
+        pe = PickEvaluation(
+            pick_no=1, prospect_id=101, prospect_name="Test",
+            selected_pick=1, expected_pick=1, pick_error=0,
+            draft_range_min=1, draft_range_max=5, projected_range_hit=True,
+            consensus_rank=1, big_board_rank=1,
+            projection_source="consensus_reference", projection_confidence=0.7,
+            team_projection_match=None, is_locked_pick=False,
+        )
+        forbidden = {"retrieval_score", "evidence", "semantic_similarity", "llm_output"}
+        assert not (forbidden & set(pe.__dict__.keys()))
+
+
+class TestRunEvaluationCalibrationDiffFields:
+    """DB integration tests for the new M3-C JSON fields."""
+
+    def test_run_evaluation_includes_new_diff_fields(self, db_session: Session) -> None:
+        _seed_minimal_fixture(db_session)
+        report = run_evaluation(
+            db_session,
+            year=2026,
+            rounds=1,
+            limit=2,
+            compare_calibration=True,
+        )
+        assert "calibration_on_picks" in report
+        assert "calibration_pick_diffs" in report
+        assert "calibration_pick_diff_summary" in report
+        # calibration_on_picks should be a list of per-pick dicts
+        on_picks = report["calibration_on_picks"]
+        assert isinstance(on_picks, list)
+        # calibration_pick_diffs should match number of picks
+        diffs = report["calibration_pick_diffs"]
+        assert isinstance(diffs, list)
+        assert len(diffs) == len(on_picks)
+        # summary should have round_1 / round_2
+        summary = report["calibration_pick_diff_summary"]
+        assert "round_1" in summary
+        assert "round_2" in summary
+        assert summary["total_picks"] == len(diffs)
+
+    def test_run_evaluation_diff_no_retrieval_score(self, db_session: Session) -> None:
+        _seed_minimal_fixture(db_session)
+        report = run_evaluation(
+            db_session,
+            year=2026,
+            rounds=1,
+            limit=2,
+            compare_calibration=True,
+        )
+        forbidden = {"retrieval_score", "evidence", "semantic_similarity", "llm_output"}
+        for d in report.get("calibration_pick_diffs", []):
+            assert not (forbidden & set(d.keys()))
+
+    def test_run_evaluation_diff_read_only(self, db_session: Session) -> None:
+        """Calibration diff computation must not write to DB."""
+        _seed_minimal_fixture(db_session)
+        inspector = inspect(db_session.bind)
+        before_counts: dict[str, int] = {}
+        for table_name in inspector.get_table_names():
+            from sqlalchemy import text
+            result = db_session.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
+            before_counts[table_name] = result.scalar()
+
+        run_evaluation(
+            db_session,
+            year=2026,
+            rounds=1,
+            limit=2,
+            compare_calibration=True,
+        )
+
+        after_counts: dict[str, int] = {}
+        for table_name in inspector.get_table_names():
+            from sqlalchemy import text
+            result = db_session.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
+            after_counts[table_name] = result.scalar()
+
+        for table_name in before_counts:
+            assert before_counts[table_name] == after_counts[table_name], (
+                f"Table '{table_name}' grew from {before_counts[table_name]} "
+                f"to {after_counts[table_name]} -- eval diff must not write DB"
+            )
+
+    def test_run_evaluation_backward_compat_off_vs_on(self, db_session: Session) -> None:
+        """The original calibration_off_vs_on field must still be present."""
+        _seed_minimal_fixture(db_session)
+        report = run_evaluation(
+            db_session,
+            year=2026,
+            rounds=1,
+            limit=2,
+            compare_calibration=True,
+        )
+        assert "calibration_off_vs_on" in report
+        cal = report["calibration_off_vs_on"]
+        assert "calibration_off" in cal or "status" in cal

@@ -16,6 +16,17 @@ computes pick-error / range-hit / top-N overlap / team-match metrics.
 If projection data is missing, the script reports ``status: unavailable`` with
 a reason -- it never fabricates consensus data.
 
+JSON output fields (additive over versions):
+  * ``picks`` -- per-pick detail for calibration OFF (always present).
+  * ``calibration_off_vs_on`` -- aggregate OFF/ON metric comparison.
+  * ``calibration_on_picks`` -- per-pick detail for calibration ON (M3-C,
+    only when ``compare_calibration=True``).
+  * ``calibration_pick_diffs`` -- per-pick OFF vs ON diff entries with
+    ``impact`` classification (M3-C, only when ``compare_calibration=True``).
+  * ``calibration_pick_diff_summary`` -- aggregate diff counts with
+    ``round_1`` / ``round_2`` breakdowns (M3-C, only when
+    ``compare_calibration=True``).
+
 Usage::
 
     cd D:\\DraftMind\\backend
@@ -145,6 +156,11 @@ class PickEvaluation:
     projection_confidence: float | None
     team_projection_match: bool | None
     is_locked_pick: bool
+    # --- M3-C additive fields (per-pick calibration diff support) ---
+    round: int = 1
+    team_abbr: str | None = None
+    missing_projection: bool = False
+    selected_outside_projected_range: bool = False
 
 
 @dataclass
@@ -209,6 +225,213 @@ LOCKED_PICK_LOG_MARKER = "This pick was locked by user override."
 def _is_locked_pick(decision_log: list[str]) -> bool:
     """Check if a pick was locked by user override (not a prediction)."""
     return any(LOCKED_PICK_LOG_MARKER in entry for entry in decision_log)
+
+
+def _pick_round(pick_no: int) -> int:
+    """Return the draft round for a pick number.
+
+    Picks 1-30 are round 1, picks 31-60 are round 2.
+    """
+    if pick_no <= 30:
+        return 1
+    return 2
+
+
+# ---------------------------------------------------------------------------
+# Per-pick calibration diff helpers (M3-C)
+# ---------------------------------------------------------------------------
+
+IMPACT_LABELS = (
+    "unchanged",
+    "clearly_improved",
+    "likely_improved",
+    "neutral_or_unclear",
+    "likely_worse",
+    "risky_change",
+    "unavailable",
+)
+
+
+def classify_pick_diff_impact(
+    off_pick: dict[str, Any],
+    on_pick: dict[str, Any],
+) -> str:
+    """Classify the impact of calibration on a single pick (conservative).
+
+    Rules (in priority order):
+      * ``unchanged`` -- same prospect selected at this pick.
+      * ``unavailable`` -- both OFF/ON lack a computable pick_error, or ON
+        lacks a projection while OFF has one (cannot compare).
+      * ``likely_improved`` -- OFF has no projection but ON does (ON error
+        computable), or ON error is 1-2 smaller than OFF error.
+      * ``clearly_improved`` -- ON error is >= 3 smaller than OFF error and
+        range_hit did not worsen.
+      * ``neutral_or_unclear`` -- ON error equals OFF error and range_hit
+        did not worsen, or error improved but range_hit worsened (mixed).
+      * ``likely_worse`` -- ON error is 1-2 larger than OFF error.
+      * ``risky_change`` -- ON error is >= 3 larger than OFF error, or
+        range_hit went True -> False while error is unchanged.
+
+    The function never fabricates errors. When projection data is missing
+    on either side and a comparison is impossible, it returns
+    ``unavailable``.
+    """
+    off_id = off_pick.get("prospect_id")
+    on_id = on_pick.get("prospect_id")
+
+    # Same prospect selected -> unchanged (errors would be identical)
+    if off_id is not None and off_id == on_id:
+        return "unchanged"
+
+    off_error = off_pick.get("pick_error")
+    on_error = on_pick.get("pick_error")
+    off_range_hit = off_pick.get("projected_range_hit")
+    on_range_hit = on_pick.get("projected_range_hit")
+
+    # Both errors missing -> cannot compare
+    if off_error is None and on_error is None:
+        return "unavailable"
+
+    # OFF missing projection, ON has computable error -> likely_improved
+    if off_error is None and on_error is not None:
+        return "likely_improved"
+
+    # ON missing projection, OFF has error -> cannot compare ON side
+    if off_error is not None and on_error is None:
+        return "unavailable"
+
+    # Both errors available -- compute delta (negative = ON better)
+    delta = on_error - off_error
+    range_worsened = (off_range_hit is True and on_range_hit is False)
+
+    if delta <= -3:
+        # Meaningful improvement; if range worsened it's a mixed signal
+        return "neutral_or_unclear" if range_worsened else "clearly_improved"
+
+    if delta in (-2, -1):
+        # Slight improvement; mixed if range worsened
+        return "neutral_or_unclear" if range_worsened else "likely_improved"
+
+    if delta == 0:
+        # Error unchanged; risky if range_hit went True -> False
+        return "risky_change" if range_worsened else "neutral_or_unclear"
+
+    if delta in (1, 2):
+        # Slight worsening
+        return "likely_worse"
+
+    # delta >= 3 -- meaningful worsening
+    return "risky_change"
+
+
+def _range_hit_delta_label(
+    off_hit: bool | None, on_hit: bool | None
+) -> str:
+    """Label the change in projected_range_hit between OFF and ON."""
+    if off_hit is None or on_hit is None:
+        return "unavailable"
+    if off_hit == on_hit:
+        return "unchanged"
+    if on_hit is True and off_hit is False:
+        return "improved"
+    return "worsened"
+
+
+def build_calibration_pick_diffs(
+    off_picks: list[dict[str, Any]],
+    on_picks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build per-pick OFF vs ON diff entries.
+
+    Only picks present in both lists are compared (matched by index, which
+    corresponds to pick order). Each entry includes the impact
+    classification from :func:`classify_pick_diff_impact`.
+    """
+    diffs: list[dict[str, Any]] = []
+    n = min(len(off_picks), len(on_picks))
+    for i in range(n):
+        off = off_picks[i]
+        on = on_picks[i]
+        off_error = off.get("pick_error")
+        on_error = on.get("pick_error")
+        pick_error_delta: int | None
+        if off_error is not None and on_error is not None:
+            pick_error_delta = on_error - off_error
+        else:
+            pick_error_delta = None
+
+        diffs.append({
+            "pick_no": off.get("pick_no"),
+            "round": off.get("round"),
+            "team_abbr": off.get("team_abbr"),
+            "off_prospect_name": off.get("prospect_name"),
+            "on_prospect_name": on.get("prospect_name"),
+            "changed": off.get("prospect_id") != on.get("prospect_id"),
+            "off_expected_pick": off.get("expected_pick"),
+            "on_expected_pick": on.get("expected_pick"),
+            "off_pick_error": off_error,
+            "on_pick_error": on_error,
+            "pick_error_delta": pick_error_delta,
+            "off_projected_range_hit": off.get("projected_range_hit"),
+            "on_projected_range_hit": on.get("projected_range_hit"),
+            "range_hit_delta": _range_hit_delta_label(
+                off.get("projected_range_hit"), on.get("projected_range_hit")
+            ),
+            "impact": classify_pick_diff_impact(off, on),
+        })
+    return diffs
+
+
+def _empty_impact_counts() -> dict[str, int]:
+    return {label: 0 for label in IMPACT_LABELS}
+
+
+def build_calibration_pick_diff_summary(
+    diffs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build aggregate summary of per-pick calibration diffs.
+
+    Includes overall counts plus per-round breakdowns (round 1 = picks
+    1-30, round 2 = picks 31-60).
+    """
+    overall = _empty_impact_counts()
+    overall["total_picks"] = len(diffs)
+    overall["changed_picks"] = 0
+    overall["unchanged_picks"] = 0
+
+    round_buckets: dict[int, dict[str, Any]] = {1: _empty_impact_counts(), 2: _empty_impact_counts()}
+    for r in (1, 2):
+        round_buckets[r]["total_picks"] = 0
+        round_buckets[r]["changed_picks"] = 0
+        round_buckets[r]["unchanged_picks"] = 0
+
+    for d in diffs:
+        impact = d.get("impact", "unavailable")
+        changed = d.get("changed", False)
+        r = d.get("round") or 1
+        if r not in round_buckets:
+            round_buckets[r] = _empty_impact_counts()
+            round_buckets[r]["total_picks"] = 0
+            round_buckets[r]["changed_picks"] = 0
+            round_buckets[r]["unchanged_picks"] = 0
+
+        overall[impact] = overall.get(impact, 0) + 1
+        overall["total_picks"] += 0  # already set
+        if changed:
+            overall["changed_picks"] += 1
+        else:
+            overall["unchanged_picks"] += 1
+
+        round_buckets[r][impact] = round_buckets[r].get(impact, 0) + 1
+        round_buckets[r]["total_picks"] += 1
+        if changed:
+            round_buckets[r]["changed_picks"] += 1
+        else:
+            round_buckets[r]["unchanged_picks"] += 1
+
+    overall["round_1"] = round_buckets.get(1, _empty_impact_counts())
+    overall["round_2"] = round_buckets.get(2, _empty_impact_counts())
+    return overall
 
 
 def evaluate_simulation(
@@ -280,7 +503,9 @@ def evaluate_simulation(
         selected = pick_data["selected_player"]
         prospect_id = selected.get("id")
         prospect_name = selected.get("name")
-        team_id = pick_data.get("team", {}).get("id")
+        team_data = pick_data.get("team", {})
+        team_id = team_data.get("id")
+        team_abbr = team_data.get("abbr")
         decision_log = pick_data.get("decision_log", [])
 
         is_locked = _is_locked_pick(decision_log)
@@ -315,6 +540,10 @@ def evaluate_simulation(
                 projection_confidence=None,
                 team_projection_match=None,
                 is_locked_pick=is_locked,
+                round=_pick_round(pick_no),
+                team_abbr=team_abbr,
+                missing_projection=True,
+                selected_outside_projected_range=False,
             )
             report.picks.append(asdict(pick_eval))
             continue
@@ -386,6 +615,10 @@ def evaluate_simulation(
                 else None
             ),
             is_locked_pick=is_locked,
+            round=_pick_round(pick_no),
+            team_abbr=team_abbr,
+            missing_projection=False,
+            selected_outside_projected_range=(range_hit is False),
         )
         report.picks.append(asdict(pick_eval))
 
@@ -634,7 +867,25 @@ def run_evaluation(
                 limit=limit,
             )
 
-            # Compute diff
+            # Per-pick ON detail (M3-C)
+            # report_on.picks is already a list of dicts (asdict applied in
+            # evaluate_simulation), so we use it directly.
+            on_picks_detail = list(report_on.picks)
+            result["calibration_on_picks"] = on_picks_detail
+
+            # Per-pick OFF vs ON diff (M3-C)
+            off_picks_detail = result.get("picks", [])
+            pick_diffs = build_calibration_pick_diffs(
+                off_picks_detail, on_picks_detail
+            )
+            result["calibration_pick_diffs"] = pick_diffs
+
+            # Aggregate diff summary with round grouping (M3-C)
+            result["calibration_pick_diff_summary"] = (
+                build_calibration_pick_diff_summary(pick_diffs)
+            )
+
+            # Compute diff (aggregate metrics, kept for backward compat)
             diff = {
                 "calibration_off": {
                     "average_pick_error": report_off.average_pick_error,
@@ -787,6 +1038,33 @@ def format_human_report(report: dict[str, Any]) -> str:
                     f"{str(off_val):>12s} {str(on_val):>12s}"
                 )
             lines.append(f"  Selected player changes:         {cal.get('selected_player_changes', 'N/A')}")
+            # M3-C: per-pick diff summary (if available)
+            summary = report.get("calibration_pick_diff_summary")
+            if summary:
+                lines.append("")
+                lines.append("  Per-pick diff summary:")
+                lines.append(
+                    f"    changed={summary.get('changed_picks', 0)}  "
+                    f"unchanged={summary.get('unchanged_picks', 0)}"
+                )
+                for label in [
+                    "clearly_improved",
+                    "likely_improved",
+                    "neutral_or_unclear",
+                    "likely_worse",
+                    "risky_change",
+                    "unavailable",
+                ]:
+                    lines.append(f"    {label:22s} {summary.get(label, 0)}")
+                for rnd_key, rnd_label in [("round_1", "Round 1"), ("round_2", "Round 2")]:
+                    rnd = summary.get(rnd_key, {})
+                    lines.append(
+                        f"    {rnd_label:22s} "
+                        f"total={rnd.get('total_picks', 0)}  "
+                        f"changed={rnd.get('changed_picks', 0)}  "
+                        f"risky={rnd.get('risky_change', 0)}  "
+                        f"likely_worse={rnd.get('likely_worse', 0)}"
+                    )
         lines.append("")
 
     lines.append("=" * 72)
