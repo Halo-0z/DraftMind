@@ -38,14 +38,23 @@ STATS_CONFIDENCE = 0.30
 # runs.
 #
 # Keys are (name, year) tuples.  Values are dicts of field -> value.
-# Only the fields listed here are overwritten; all other prospect fields
-# (age, upside_score, risk_score, height, weight, school_or_league) are left
-# untouched.
+# Only the fields listed in each entry are overwritten; all other prospect
+# fields (age, risk_score, height, weight, school_or_league) are left
+# untouched.  upside_score may be overridden per-entry when the heuristic
+# value is known to be wrong (see Brayden Burries below).
 #
 # M4-P: Yaxel Lendeborg's NBA.com heuristic stats were SF-position template
 # values (ppg=12.1, rpg=5.9, apg=2.4, three_pct=33.5, ...), not real stats.
 # Source-scout verified values (M4-N) are curated here so the importer can
 # never regress them back to template estimates.
+#
+# M4-W: Brayden Burries's NBA.com heuristic stats were PG/SG-position
+# template values (ppg=13.0, rpg=3.4, apg=4.2, stocks=1.2, fg=44.5,
+# three=35.5, ft=77.5), not real stats.  Source-scout verified values
+# (M4-T) are curated here.  upside_score is also lifted from 72.6 to 78.0
+# (M4-V S4 sweet spot) so Brayden lands in his projected range 8-13
+# instead of being skipped in the first round.  risk_score is intentionally
+# left at the DB value (36.3) per M4-V conclusion.
 CURATED_PROSPECT_OVERRIDES: dict[tuple[str, int], dict[str, Any]] = {
     ("Yaxel Lendeborg", 2026): {
         "position": "PF",
@@ -57,6 +66,20 @@ CURATED_PROSPECT_OVERRIDES: dict[tuple[str, int], dict[str, Any]] = {
         "three_pct": 37.2,
         "ft_pct": 82.4,
         "stocks": 2.3,
+        "stats_source": "seed_manual",
+        "stats_confidence": 0.80,
+    },
+    ("Brayden Burries", 2026): {
+        "position": "SG",
+        "archetype": "Two-way combo guard",
+        "ppg": 16.1,
+        "rpg": 4.9,
+        "apg": 2.4,
+        "fg_pct": 49.1,
+        "three_pct": 39.1,
+        "ft_pct": 80.5,
+        "stocks": 1.7,
+        "upside_score": 78.0,
         "stats_source": "seed_manual",
         "stats_confidence": 0.80,
     },

@@ -1,9 +1,14 @@
-"""M4-P tests: curated prospect overrides for import_nba_prospects.
+"""M4-P / M4-W tests: curated prospect overrides for import_nba_prospects.
 
 Verifies that hand-curated stats/position/archetype overrides are applied
-correctly and survive subsequent importer runs.  The canonical case is
-Yaxel Lendeborg, whose NBA.com heuristic stats were SF-position template
-values rather than real stats.
+correctly and survive subsequent importer runs.  Canonical cases:
+
+* Yaxel Lendeborg (M4-P): NBA.com heuristic stats were SF-position template
+  values rather than real stats.
+* Brayden Burries (M4-W): NBA.com heuristic stats were PG/SG-position
+  template values rather than real stats.  upside_score is also lifted from
+  72.6 to 78.0 (M4-V S4 sweet spot) so Brayden lands in his projected
+  range 8-13.  risk_score is intentionally NOT overridden.
 """
 
 from __future__ import annotations
@@ -210,3 +215,145 @@ def test_apply_curated_overrides_to_db_updates_existing_row(
     assert reloaded.risk_score == 45.7
     assert reloaded.upside_score == 74.2
     assert reloaded.age == 23.0
+
+
+# ---------------------------------------------------------------------------
+# M4-W: Brayden Burries curated override
+# ---------------------------------------------------------------------------
+
+
+def test_curated_overrides_map_contains_brayden() -> None:
+    """The override map must contain Brayden Burries for 2026."""
+    assert ("Brayden Burries", 2026) in CURATED_PROSPECT_OVERRIDES
+    override = CURATED_PROSPECT_OVERRIDES[("Brayden Burries", 2026)]
+    assert override["position"] == "SG"
+    assert override["archetype"] == "Two-way combo guard"
+    assert override["ppg"] == 16.1
+    assert override["rpg"] == 4.9
+    assert override["apg"] == 2.4
+    assert override["fg_pct"] == 49.1
+    assert override["three_pct"] == 39.1
+    assert override["ft_pct"] == 80.5
+    assert override["stocks"] == 1.7
+    assert override["upside_score"] == 78.0
+    assert override["stats_source"] == "seed_manual"
+    assert override["stats_confidence"] == 0.80
+
+
+def test_brayden_override_does_not_contain_risk_or_age() -> None:
+    """Brayden's override must NOT contain risk_score or age.
+
+    upside_score IS present (M4-V S4 sweet spot), but risk_score is
+    intentionally left at the DB value (36.3) and age is never overridden.
+    """
+    override = CURATED_PROSPECT_OVERRIDES[("Brayden Burries", 2026)]
+    assert "risk_score" not in override
+    assert "age" not in override
+    # upside_score IS expected to be present for Brayden
+    assert "upside_score" in override
+    assert override["upside_score"] == 78.0
+
+
+def test_apply_curated_override_applies_brayden_fields() -> None:
+    """apply_curated_override overwrites Brayden's heuristic fields."""
+    prospect = _make_prospect(
+        name="Brayden Burries",
+        year=2026,
+        position="SG",
+        archetype="Heuristic combo guard",
+        ppg=13.0,
+        rpg=3.4,
+        apg=4.2,
+        fg_pct=44.5,
+        three_pct=35.5,
+        ft_pct=77.5,
+        stocks=1.2,
+        upside_score=72.6,
+        risk_score=36.3,
+    )
+    applied = apply_curated_override(prospect)
+
+    assert applied is True
+    assert prospect.position == "SG"
+    assert prospect.archetype == "Two-way combo guard"
+    assert prospect.ppg == 16.1
+    assert prospect.rpg == 4.9
+    assert prospect.apg == 2.4
+    assert prospect.fg_pct == 49.1
+    assert prospect.three_pct == 39.1
+    assert prospect.ft_pct == 80.5
+    assert prospect.stocks == 1.7
+    assert prospect.upside_score == 78.0
+    assert prospect.stats_source == "seed_manual"
+    assert prospect.stats_confidence == 0.80
+
+
+def test_apply_curated_override_preserves_brayden_risk_score() -> None:
+    """apply_curated_override must NOT change Brayden's risk_score.
+
+    M4-V concluded risk_score=36.3 should stay; only upside_score is lifted.
+    """
+    prospect = _make_prospect(
+        name="Brayden Burries",
+        year=2026,
+        upside_score=72.6,
+        risk_score=36.3,
+        age=19.5,
+    )
+    apply_curated_override(prospect)
+
+    assert prospect.risk_score == 36.3
+    assert prospect.upside_score == 78.0  # lifted
+    assert prospect.age == 19.5  # untouched
+
+
+def test_apply_curated_overrides_to_db_updates_brayden_row(
+    db_session: Session,
+) -> None:
+    """apply_curated_overrides_to_db updates Brayden in a real DB session."""
+    p = Prospect(
+        year=2026,
+        name="Brayden Burries",
+        position="SG",
+        archetype="Heuristic combo guard",
+        age=19.5,
+        height="6-5",
+        weight=195,
+        school_or_league="Arizona",
+        ppg=13.0,
+        rpg=3.4,
+        apg=4.2,
+        fg_pct=44.5,
+        three_pct=35.5,
+        ft_pct=77.5,
+        stocks=1.2,
+        upside_score=72.6,
+        risk_score=36.3,
+        stats_source="nba_importer_heuristic",
+        stats_confidence=0.30,
+    )
+    db_session.add(p)
+    db_session.commit()
+    db_session.expire_all()
+
+    reloaded = db_session.get(Prospect, p.id)
+    assert reloaded is not None
+    applied = apply_curated_override(reloaded)
+    db_session.commit()
+
+    assert applied is True
+    assert reloaded.position == "SG"
+    assert reloaded.archetype == "Two-way combo guard"
+    assert reloaded.ppg == 16.1
+    assert reloaded.rpg == 4.9
+    assert reloaded.apg == 2.4
+    assert reloaded.fg_pct == 49.1
+    assert reloaded.three_pct == 39.1
+    assert reloaded.ft_pct == 80.5
+    assert reloaded.stocks == 1.7
+    assert reloaded.upside_score == 78.0
+    assert reloaded.stats_source == "seed_manual"
+    assert reloaded.stats_confidence == 0.80
+    # Untouched fields
+    assert reloaded.risk_score == 36.3
+    assert reloaded.age == 19.5
