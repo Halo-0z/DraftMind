@@ -30,6 +30,71 @@ STATS_SOURCE = "nba_importer_heuristic"
 STATS_CONFIDENCE = 0.30
 
 
+# Curated prospect overrides.
+#
+# Hand-curated stats/position/archetype for prospects whose NBA.com heuristic
+# estimates are known to be inaccurate.  Applied after build_prospect() and
+# update_bio() so the curated values always win, even on subsequent importer
+# runs.
+#
+# Keys are (name, year) tuples.  Values are dicts of field -> value.
+# Only the fields listed here are overwritten; all other prospect fields
+# (age, upside_score, risk_score, height, weight, school_or_league) are left
+# untouched.
+#
+# M4-P: Yaxel Lendeborg's NBA.com heuristic stats were SF-position template
+# values (ppg=12.1, rpg=5.9, apg=2.4, three_pct=33.5, ...), not real stats.
+# Source-scout verified values (M4-N) are curated here so the importer can
+# never regress them back to template estimates.
+CURATED_PROSPECT_OVERRIDES: dict[tuple[str, int], dict[str, Any]] = {
+    ("Yaxel Lendeborg", 2026): {
+        "position": "PF",
+        "archetype": "Connector frontcourt",
+        "ppg": 15.1,
+        "rpg": 6.8,
+        "apg": 3.2,
+        "fg_pct": 51.5,
+        "three_pct": 37.2,
+        "ft_pct": 82.4,
+        "stocks": 2.3,
+        "stats_source": "seed_manual",
+        "stats_confidence": 0.80,
+    },
+}
+
+
+def apply_curated_override(prospect: Prospect) -> bool:
+    """Apply curated stats override to a prospect if one exists.
+
+    Returns True if an override was applied, False otherwise.
+    Only overwrites the fields present in the override dict; never touches
+    age, upside_score, risk_score, or projection data.
+    """
+    key = (prospect.name, prospect.year)
+    override = CURATED_PROSPECT_OVERRIDES.get(key)
+    if override is None:
+        return False
+    for field, value in override.items():
+        setattr(prospect, field, value)
+    return True
+
+
+def apply_curated_overrides_to_db() -> int:
+    """Apply curated overrides to existing DB rows without fetching NBA.com.
+
+    Useful for applying hand-curated fixes without a network round-trip.
+    Returns the number of prospects updated.
+    """
+    with SessionLocal() as db:
+        updated = 0
+        all_prospects = list(db.scalars(select(Prospect)))
+        for prospect in all_prospects:
+            if apply_curated_override(prospect):
+                updated += 1
+        db.commit()
+        return updated
+
+
 def _apply_importer_stats_provenance(prospect: Prospect) -> None:
     """Tag a prospect with importer-heuristic stats provenance.
 
@@ -105,6 +170,10 @@ def main() -> None:
                 update_bio(existing, row)
                 updated += 1
                 prospect = existing
+
+            # M4-P: apply curated override AFTER build_prospect/update_bio
+            # so hand-curated values always win over heuristic estimates.
+            apply_curated_override(prospect)
 
             upsert_report(db, prospect, row)
 
@@ -302,4 +371,10 @@ def to_float(value: Any) -> float | None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if "--curated-only" in sys.argv:
+        count = apply_curated_overrides_to_db()
+        print(f"Applied curated overrides to {count} prospect(s).")
+    else:
+        main()
