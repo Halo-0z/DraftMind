@@ -577,3 +577,45 @@ def test_display_only_team_source_falls_back_to_generic_floor() -> None:
     assert "availability protection" in notes_joined
     # And the note must NOT claim a matching team signal.
     assert "matching team projection signal" not in notes_joined
+
+
+# ---------------------------------------------------------------------------
+# M4-D: late-board projection (expected_pick > 60) must NOT trigger the
+# top market prior availability floor.  The floor gate is expected_pick <= 8
+# (MARKET_PRIOR_MAX_EXPECTED_PICK), so a second-round / UDFA-bubble
+# projection at expected_pick=65 should be treated as a normal projection
+# without any availability protection.
+# ---------------------------------------------------------------------------
+
+
+def test_availability_floor_does_not_trigger_for_expected_pick_above_60() -> None:
+    """M4-D: A prospect with expected_pick=65 (second-round / UDFA-bubble)
+    must NOT trigger the availability floor, even if other gate conditions
+    (confidence, source, team projection) are met.  The floor is reserved
+    for top-8 market prior prospects only."""
+    late_board_projection = SimpleNamespace(
+        expected_pick=65,
+        draft_range_min=62,
+        draft_range_max=67,
+        tier=6,
+        source="consensus_reference",
+        confidence=0.54,
+    )
+    sort_score, eligible, notes = calculate_prediction_sort_score(
+        pick_no=5,
+        ranking=_ranking(final_score=55.4),
+        prospect_projection=late_board_projection,
+        team_projection=SimpleNamespace(
+            projection_type="consensus_mock",
+            source="consensus_reference",
+            confidence=0.62,
+        ),
+        original_top_final_score=67.1,
+    )
+
+    # The availability floor must NOT trigger for expected_pick=65.
+    notes_joined = " ".join(notes).lower()
+    assert "availability protection" not in notes_joined
+    # The prospect should not get the floor boost (66.6 or 65.1).
+    # With expected_pick=65, the normal adjustment applies (small boost).
+    assert sort_score < 65.0  # well below the floor of 65.1

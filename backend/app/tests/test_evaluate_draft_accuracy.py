@@ -1026,3 +1026,32 @@ class TestRunEvaluationCalibrationDiffFields:
         assert "calibration_off_vs_on" in report
         cal = report["calibration_off_vs_on"]
         assert "calibration_off" in cal or "status" in cal
+
+
+# ---------------------------------------------------------------------------
+# M4-D: eval must handle expected_pick > 60 (second-round / UDFA-bubble)
+# ---------------------------------------------------------------------------
+
+
+class TestM4DLateBoardProjection:
+    """M4-D: Verify that evaluate_draft_accuracy can calculate pick_error
+    for prospects with expected_pick > 60 (second-round / UDFA-bubble
+    projections).  These values must NOT become unavailable."""
+
+    def test_calculate_pick_error_works_for_expected_pick_65(self) -> None:
+        """calculate_pick_error must return a numeric error for
+        expected_pick=65, not None (which would mean unavailable)."""
+        error = calculate_pick_error(selected_pick=40, expected_pick=65)
+        assert error is not None
+        assert error == 25
+
+    def test_calculate_pick_error_works_for_expected_pick_84(self) -> None:
+        """calculate_pick_error must work for expected_pick=84."""
+        error = calculate_pick_error(selected_pick=60, expected_pick=84)
+        assert error is not None
+        assert error == 24
+
+    def test_calculate_pick_error_returns_none_for_none_expected(self) -> None:
+        """Sanity: None expected_pick still returns None (unavailable)."""
+        error = calculate_pick_error(selected_pick=40, expected_pick=None)
+        assert error is None

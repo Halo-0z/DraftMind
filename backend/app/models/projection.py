@@ -29,24 +29,31 @@ class ProspectDraftProjection(Base):
             "source",
             name="uq_prospect_projection_prospect_year_source",
         ),
+        # M4-D: projection field upper bound widened from 60 to 100 to support
+        # second-round / UDFA-bubble market board projections.  expected_pick >
+        # 60 represents a market board slot / outside-draft projection, NOT a
+        # real NBA pick number (the draft only has 60 picks).  These values are
+        # used for eval / calibration awareness only.  The calibration top
+        # market prior gate remains controlled by expected_pick <= 8, so
+        # late-board projections do not inflate first-round selection.
         CheckConstraint(
-            "consensus_rank IS NULL OR consensus_rank BETWEEN 1 AND 60",
+            "consensus_rank IS NULL OR consensus_rank BETWEEN 1 AND 100",
             name="ck_prospect_projection_consensus_rank_range",
         ),
         CheckConstraint(
-            "big_board_rank IS NULL OR big_board_rank BETWEEN 1 AND 60",
+            "big_board_rank IS NULL OR big_board_rank BETWEEN 1 AND 100",
             name="ck_prospect_projection_big_board_rank_range",
         ),
         CheckConstraint(
-            "expected_pick IS NULL OR expected_pick BETWEEN 1 AND 60",
+            "expected_pick IS NULL OR expected_pick BETWEEN 1 AND 100",
             name="ck_prospect_projection_expected_pick_range",
         ),
         CheckConstraint(
-            "draft_range_min IS NULL OR draft_range_min BETWEEN 1 AND 60",
+            "draft_range_min IS NULL OR draft_range_min BETWEEN 1 AND 100",
             name="ck_prospect_projection_range_min",
         ),
         CheckConstraint(
-            "draft_range_max IS NULL OR draft_range_max BETWEEN 1 AND 60",
+            "draft_range_max IS NULL OR draft_range_max BETWEEN 1 AND 100",
             name="ck_prospect_projection_range_max",
         ),
         CheckConstraint(

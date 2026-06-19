@@ -23,11 +23,12 @@ class ProspectDraftProjectionRead(BaseModel):
     id: int
     prospect_id: int
     year: int
-    consensus_rank: int | None = Field(default=None, ge=1, le=60)
-    big_board_rank: int | None = Field(default=None, ge=1, le=60)
-    expected_pick: int | None = Field(default=None, ge=1, le=60)
-    draft_range_min: int | None = Field(default=None, ge=1, le=60)
-    draft_range_max: int | None = Field(default=None, ge=1, le=60)
+    # M4-D: upper bound widened from 60 to 100 for second-round / UDFA-bubble.
+    consensus_rank: int | None = Field(default=None, ge=1, le=100)
+    big_board_rank: int | None = Field(default=None, ge=1, le=100)
+    expected_pick: int | None = Field(default=None, ge=1, le=100)
+    draft_range_min: int | None = Field(default=None, ge=1, le=100)
+    draft_range_max: int | None = Field(default=None, ge=1, le=100)
     tier: int = Field(ge=1, le=10)
     source: ProjectionSource
     source_count: int = Field(ge=0)
@@ -41,11 +42,12 @@ class ProspectDraftProjectionRead(BaseModel):
 class ProspectDraftProjectionUpsert(BaseModel):
     prospect_id: int
     year: int = Field(ge=2000, le=2100)
-    consensus_rank: int | None = Field(default=None, ge=1, le=60)
-    big_board_rank: int | None = Field(default=None, ge=1, le=60)
-    expected_pick: int | None = Field(default=None, ge=1, le=60)
-    draft_range_min: int | None = Field(default=None, ge=1, le=60)
-    draft_range_max: int | None = Field(default=None, ge=1, le=60)
+    # M4-D: upper bound widened from 60 to 100 for second-round / UDFA-bubble.
+    consensus_rank: int | None = Field(default=None, ge=1, le=100)
+    big_board_rank: int | None = Field(default=None, ge=1, le=100)
+    expected_pick: int | None = Field(default=None, ge=1, le=100)
+    draft_range_min: int | None = Field(default=None, ge=1, le=100)
+    draft_range_max: int | None = Field(default=None, ge=1, le=100)
     tier: int | None = Field(default=None, ge=1, le=10)
     source: ProjectionSource = "manual_projection"
     source_count: int | None = Field(default=None, ge=0)

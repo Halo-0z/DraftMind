@@ -80,11 +80,13 @@ def test_prospect_draft_projection_schema_validates_rank_and_confidence() -> Non
             source="manual_projection",
         )
 
+    # M4-D: upper bound widened from 60 to 100, so 61 is now valid and 101 is
+    # the new rejection boundary.
     with pytest.raises(ValidationError):
         ProspectDraftProjectionUpsert(
             prospect_id=1,
             year=2026,
-            expected_pick=61,
+            expected_pick=101,
             source="manual_projection",
         )
 

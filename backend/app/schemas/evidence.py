@@ -27,9 +27,10 @@ class TeamFitEvidence(BaseModel):
 
 class MarketEvidence(BaseModel):
     has_market_reference: bool
-    market_expected_pick: int | None = Field(default=None, ge=1, le=60)
-    market_range_min: int | None = Field(default=None, ge=1, le=60)
-    market_range_max: int | None = Field(default=None, ge=1, le=60)
+    # M4-D: upper bound widened from 60 to 100 for second-round / UDFA-bubble.
+    market_expected_pick: int | None = Field(default=None, ge=1, le=100)
+    market_range_min: int | None = Field(default=None, ge=1, le=100)
+    market_range_max: int | None = Field(default=None, ge=1, le=100)
     market_pick_delta: int | None = None
     market_alignment_label: str | None = None
     market_alignment_notes: list[str] = Field(default_factory=list)

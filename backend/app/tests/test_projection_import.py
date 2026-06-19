@@ -447,3 +447,137 @@ def test_import_prospect_projection_writes_to_canonical_via_normalized_match(
     proj = db_session.query(ProspectDraftProjection).one()
     assert proj.prospect_id == canonical.id
     assert proj.expected_pick == 5
+
+
+# ---------------------------------------------------------------------------
+# M4-D: projection field upper bound widened from 60 to 100
+# ---------------------------------------------------------------------------
+
+
+def test_prospect_projection_accepts_expected_pick_above_60(
+    db_session: Session,
+) -> None:
+    """M4-D: ProspectDraftProjection must accept expected_pick=65
+    (second-round / UDFA-bubble projection)."""
+    prospect = _prospect(db_session)
+    projection = ProspectDraftProjection(
+        prospect_id=prospect.id,
+        year=2026,
+        expected_pick=65,
+        consensus_rank=68,
+        big_board_rank=82,
+        draft_range_min=54,
+        draft_range_max=97,
+        tier=6,
+        source="consensus_reference",
+        source_count=4,
+        confidence=0.52,
+        notes="M4-D second-round projection",
+    )
+    db_session.add(projection)
+    db_session.commit()
+    db_session.refresh(projection)
+
+    assert projection.expected_pick == 65
+    assert projection.consensus_rank == 68
+    assert projection.big_board_rank == 82
+    assert projection.draft_range_max == 97
+
+
+def test_prospect_projection_rejects_expected_pick_above_100(
+    db_session: Session,
+) -> None:
+    """M4-D: ProspectDraftProjection must still reject expected_pick=101."""
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    prospect = _prospect(db_session)
+    projection = ProspectDraftProjection(
+        prospect_id=prospect.id,
+        year=2026,
+        expected_pick=101,
+        tier=6,
+        source="consensus_reference",
+        source_count=1,
+        confidence=0.5,
+        notes="should fail",
+    )
+    db_session.add(projection)
+    with pytest.raises(IntegrityError, match="CHECK constraint failed"):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_prospect_projection_rejects_draft_range_max_above_100(
+    db_session: Session,
+) -> None:
+    """M4-D: draft_range_max=101 must still be rejected."""
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    prospect = _prospect(db_session)
+    projection = ProspectDraftProjection(
+        prospect_id=prospect.id,
+        year=2026,
+        expected_pick=65,
+        draft_range_min=60,
+        draft_range_max=101,
+        tier=6,
+        source="consensus_reference",
+        source_count=1,
+        confidence=0.5,
+        notes="should fail",
+    )
+    db_session.add(projection)
+    with pytest.raises(IntegrityError, match="CHECK constraint failed"):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_csv_import_accepts_expected_pick_above_60(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    """M4-D: importer must accept a CSV row with expected_pick=65."""
+    csv_path = _write_csv(
+        tmp_path / "second_round.csv",
+        "year,prospect_name,consensus_rank,big_board_rank,expected_pick,draft_range_min,draft_range_max,tier,source,source_count,confidence,notes",
+        [
+            "2026,Mikel Brown Jr.,65,65,65,62,67,6,consensus_reference,4,0.54,second round",
+        ],
+    )
+
+    summary = import_prospect_projection_csv(db_session, csv_path)
+    db_session.commit()
+
+    assert summary.created == 1
+    projection = db_session.query(ProspectDraftProjection).one()
+    assert projection.expected_pick == 65
+    assert projection.draft_range_max == 67
+    assert projection.notes == "second round"
+
+
+def test_team_pick_projection_still_rejects_pick_no_above_60(
+    db_session: Session,
+) -> None:
+    """M4-D: TeamPickProjection.pick_no must still be limited to 1-60
+    (the NBA draft only has 60 picks)."""
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    prospect = _prospect(db_session)
+    team = _team(db_session)
+    projection = TeamPickProjection(
+        year=2026,
+        pick_no=61,
+        team_id=team.id,
+        prospect_id=prospect.id,
+        projection_type="consensus_mock",
+        source="seed_projection",
+        confidence=0.5,
+        notes="should fail",
+    )
+    db_session.add(projection)
+    with pytest.raises(IntegrityError, match="CHECK constraint failed"):
+        db_session.commit()
+    db_session.rollback()
