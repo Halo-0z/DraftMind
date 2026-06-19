@@ -31,6 +31,7 @@ from app.services.embedding_service import (
     FAKE_MODEL_NAME,
     embed_chunk,
     embed_chunks,
+    embed_query,
 )
 
 
@@ -475,3 +476,83 @@ def test_fake_embedding_dim_matches_real_minilm_dim() -> None:
     """The fake dim is chosen so M2-C2 can swap in ``all-MiniLM-L6-v2``."""
     # all-MiniLM-L6-v2 produces 384-dim vectors.
     assert FAKE_EMBEDDING_DIM == 384
+
+
+# ---------------------------------------------------------------------------
+# RAG-v2-M2-D2: embed_query
+# ---------------------------------------------------------------------------
+
+
+def test_embed_query_returns_list_of_floats() -> None:
+    """embed_query returns a list[float] (not EmbeddingVector)."""
+    vector = embed_query("perimeter defender")
+    assert isinstance(vector, list)
+    for v in vector:
+        assert isinstance(v, float)
+
+
+def test_embed_query_length_equals_fake_embedding_dim() -> None:
+    """The returned vector has length FAKE_EMBEDDING_DIM."""
+    vector = embed_query("perimeter defender")
+    assert len(vector) == FAKE_EMBEDDING_DIM
+
+
+def test_embed_query_l2_norm_approximately_one() -> None:
+    """The returned vector is L2-normalized (norm ~= 1.0)."""
+    vector = embed_query("perimeter defender")
+    norm = math.sqrt(sum(v * v for v in vector))
+    assert abs(norm - 1.0) < 1e-9
+
+
+def test_embed_query_is_deterministic() -> None:
+    """The same query produces the same vector across calls."""
+    first = embed_query("perimeter defender")
+    second = embed_query("perimeter defender")
+    assert first == second
+
+
+def test_embed_query_different_queries_produce_different_vectors() -> None:
+    """Different queries produce different vectors."""
+    first = embed_query("perimeter defender")
+    second = embed_query("stretch big three point")
+    assert first != second
+
+
+def test_embed_query_empty_raises_value_error() -> None:
+    """Empty query_text raises ValueError."""
+    with pytest.raises(ValueError, match="query_text"):
+        embed_query("")
+
+
+def test_embed_query_whitespace_only_raises_value_error() -> None:
+    """Whitespace-only query_text raises ValueError."""
+    with pytest.raises(ValueError, match="query_text"):
+        embed_query("   \t\n  ")
+
+
+def test_embed_query_matches_embed_chunk_with_same_content() -> None:
+    """embed_query(text) == embed_chunk(chunk_with_content=text).vector.
+
+    Verifies that embed_query reuses the same _fake_embed algorithm as
+    embed_chunk — they must produce identical vectors for the same text.
+    """
+    query_text = "perimeter defender"
+    query_vector = embed_query(query_text)
+
+    chunk = _make_chunk(content=query_text)
+    chunk_vector = embed_chunk(chunk).vector
+
+    assert query_vector == chunk_vector
+
+
+def test_embed_query_does_not_call_ranking_engine(monkeypatch) -> None:
+    """embed_query must not invoke ranking_engine.rank_prospects."""
+    from app.services import ranking_engine
+
+    def _fail(*args, **kwargs):
+        raise AssertionError(
+            "embed_query must not call ranking_engine.rank_prospects"
+        )
+
+    monkeypatch.setattr(ranking_engine, "rank_prospects", _fail)
+    embed_query("perimeter defender")

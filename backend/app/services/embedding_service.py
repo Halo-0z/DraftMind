@@ -159,3 +159,45 @@ def embed_chunks(chunks: list[EvidenceChunk]) -> list[EmbeddingVector]:
     M2-C2 may introduce true batching).
     """
     return [embed_chunk(chunk) for chunk in chunks]
+
+
+def embed_query(query_text: str) -> list[float]:
+    """Embed a query string into a vector for semantic retrieval.
+
+    RAG-v2-M2-D2: the semantic retrieval service needs to embed raw query
+    text (not an :class:`EvidenceChunk`) so it can search the vector store.
+    This function reuses the same deterministic fake embedding algorithm
+    as :func:`embed_chunk` but returns a bare ``list[float]`` — a query
+    has no ``chunk_id`` and does not need an :class:`EmbeddingVector`
+    wrapper.
+
+    Parameters
+    ----------
+    query_text:
+        The raw query string.  Must be non-empty and not whitespace-only.
+
+    Returns
+    -------
+    list[float]
+        A deterministic, L2-normalized embedding of length
+        :data:`FAKE_EMBEDDING_DIM`.  Identical to
+        ``embed_chunk(chunk_with_content=query_text).vector``.
+
+    Raises
+    ------
+    ValueError
+        If *query_text* is empty or whitespace-only.
+
+    Safety
+    ------
+    - Pure function — no DB, no LLM, no network, no ranking_engine /
+      simulation_service / prediction_calibration / recommendation_service
+      calls.
+    - Returns ``list[float]`` (not ``EmbeddingVector``) so the query
+      vector cannot be confused with an indexed chunk embedding.
+    - The returned vector is L2-normalized so cosine similarity reduces
+      to dot product in :meth:`InMemoryVectorStore.search`.
+    """
+    if not query_text or not query_text.strip():
+        raise ValueError("query_text must not be empty or whitespace-only")
+    return _fake_embed(query_text)

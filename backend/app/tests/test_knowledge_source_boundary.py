@@ -45,6 +45,13 @@ FORBIDDEN_KNOWLEDGE_TOKENS = [
     "vector_store_service",
     "SemanticRetrievalResult",
     "InMemoryVectorStore",
+    # RAG-v2-M2-D2: the semantic retrieval service orchestrates the
+    # knowledge-source pipeline (embed_query -> search -> get_chunk ->
+    # M1-B mappers) to produce RetrievedEvidence / EvidenceCitation
+    # pairs.  It must never influence selection / scoring / ranking.
+    "semantic_retrieval_service",
+    "retrieve_semantic",
+    "embed_query",
 ]
 
 
@@ -208,6 +215,69 @@ def test_vector_store_service_does_not_import_db_or_llm_or_ml_libs() -> None:
     }
 
     module_attrs = set(vars(vs_module).keys())
+    assert forbidden_module_attrs.isdisjoint(module_attrs)
+
+
+def test_semantic_retrieval_service_does_not_import_selection_system() -> None:
+    """The semantic retrieval service must not import ranking / simulation /
+    prediction / recommendation modules (reverse boundary).
+
+    RAG-v2-M2-D2: the semantic retrieval service orchestrates the
+    knowledge-source pipeline (embed_query -> search -> get_chunk ->
+    M1-B mappers) to produce RetrievedEvidence / EvidenceCitation pairs.
+    It must never influence selection / scoring / ranking.  This test
+    enforces the boundary at the module-attribute level so a future
+    import slip is caught immediately.
+    """
+    import app.services.semantic_retrieval_service as sr_module
+
+    forbidden_module_attrs = {
+        "ranking_engine",
+        "simulation_service",
+        "prediction_calibration",
+        "recommendation_service",
+        "team_need_service",
+        "team_need_adjustment",
+        "scouting_fit",
+        "rank_prospects",
+        "simulate_draft",
+    }
+
+    module_attrs = set(vars(sr_module).keys())
+    assert forbidden_module_attrs.isdisjoint(module_attrs)
+
+
+def test_semantic_retrieval_service_does_not_import_db_or_llm_or_ml_libs() -> None:
+    """The semantic retrieval service must not import DB / LLM / external ML
+    libraries.
+
+    RAG-v2-M2-D2: the semantic retrieval service is pure-Python and only
+    orchestrates the existing M2-B / M2-C1 / M2-D1 / M1-B building
+    blocks.  This test guards against accidental introduction of
+    ``sqlalchemy`` / ``openai`` / ``numpy`` / ``faiss`` / ``torch`` /
+    ``sentence_transformers`` / ``chroma`` imports.
+    """
+    import app.services.semantic_retrieval_service as sr_module
+
+    forbidden_module_attrs = {
+        "sqlalchemy",
+        "SessionLocal",
+        "sessionmaker",
+        "create_engine",
+        "get_db",
+        "openai",
+        "anthropic",
+        "numpy",
+        "faiss",
+        "torch",
+        "sentence_transformers",
+        "chroma",
+        "chromadb",
+        "sklearn",
+        "transformers",
+    }
+
+    module_attrs = set(vars(sr_module).keys())
     assert forbidden_module_attrs.isdisjoint(module_attrs)
 
 
