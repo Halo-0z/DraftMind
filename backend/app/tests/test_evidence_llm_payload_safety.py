@@ -497,3 +497,68 @@ def test_llm_developer_message_contains_manual_note_safety_rules() -> None:
     developer_msg = client.calls[0]["messages"][1]["content"]
     assert "ManualNote safety rules" in developer_msg
     assert "manual_note" in developer_msg
+
+
+# ---------------------------------------------------------------------------
+# RAG-v2-M2-E: Semantic retrieval retrieval_score isolation
+# ---------------------------------------------------------------------------
+
+
+def test_semantic_retrieval_score_excluded_from_llm_payload() -> None:
+    """RetrievedEvidence produced by semantic retrieval carries
+    ``retrieval_score`` (for sorting).  This test verifies the LLM payload
+    whitelist still excludes it end-to-end.
+
+    RAG-v2-M2-E: the semantic retrieval wiring appends RetrievedEvidence
+    with ``retrieval_score`` set to ``PickEvidencePackage.retrieved_evidence``.
+    The ``_build_llm_explanation_payload`` whitelist must strip it so the
+    LLM never sees a numeric score that could be misinterpreted as a
+    ranking / scoring signal.
+    """
+    evidence = _full_evidence()
+    # Append a semantic-retrieval-style RetrievedEvidence with retrieval_score.
+    evidence.retrieved_evidence.append(
+        RetrievedEvidence(
+            source_type="manual_note",
+            source_id="semantic:0",
+            title="Semantic retrieval result",
+            excerpt="Chunk matched by semantic search.",
+            relevance_reason="Semantic match for query context.",
+            retrieval_score=0.92,
+            evidence_only=True,
+        )
+    )
+    # Verify the input actually has retrieval_score set.
+    assert any(
+        r.retrieval_score is not None for r in evidence.retrieved_evidence
+    )
+
+    payload = _build_llm_explanation_payload(evidence)
+    for item in payload["retrieved_evidence"]:
+        assert "retrieval_score" not in item, (
+            "retrieval_score from semantic retrieval must not enter LLM payload"
+        )
+
+
+def test_semantic_retrieval_score_excluded_from_llm_user_message() -> None:
+    """The LLM user message (JSON) must also exclude retrieval_score from
+    semantic retrieval results."""
+    evidence = _full_evidence()
+    evidence.retrieved_evidence.append(
+        RetrievedEvidence(
+            source_type="manual_note",
+            source_id="semantic:1",
+            title="Semantic retrieval result",
+            excerpt="Chunk matched by semantic search.",
+            relevance_reason="Semantic match for query context.",
+            retrieval_score=0.88,
+            evidence_only=True,
+        )
+    )
+
+    client = FakeLLMClient(_valid_llm_json(evidence))
+    build_llm_pick_explanation(evidence, llm_client=client)
+    user_msg = client.calls[0]["messages"][-1]["content"]
+    parsed = json.loads(user_msg)
+    for item in parsed["retrieved_evidence"]:
+        assert "retrieval_score" not in item

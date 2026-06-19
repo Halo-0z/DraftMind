@@ -5,8 +5,10 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.schemas.evidence import (
     ConflictEvidence,
+    EvidenceChunk,
     EvidenceCitation,
     EvidenceSufficiency,
     ManualNote,
@@ -19,11 +21,15 @@ from app.schemas.evidence import (
 )
 from app.schemas.recommendation import RankedProspectRead
 from app.schemas.simulation import SimulateResponse, SimulatedPickRead
+from app.services.evidence_chunker import chunk_text
 from app.services.evidence_document_mapper import map_evidence_document
+from app.services.embedding_service import embed_chunks
 from app.services.manual_note_mapper import manual_note_to_evidence_pair
 from app.services.manual_note_retrieval_service import (
     retrieve_manual_note_documents,
 )
+from app.services.semantic_retrieval_service import retrieve_semantic
+from app.services.vector_store_service import InMemoryVectorStore
 
 
 logger = logging.getLogger(__name__)
@@ -83,6 +89,21 @@ def build_pick_evidence(
             team_id=pick.team.id,
             pick_no=pick.pick,
         )
+
+    # RAG-v2-M2-E: config-gated semantic retrieval over manual notes.
+    # Default is OFF (evidence_retrieve_semantic=False) so existing callers
+    # are unaffected.  When enabled, manual notes are chunked, embedded,
+    # indexed, and semantically retrieved; results are appended to
+    # retrieved_evidence / citations only — never to decision / scoring /
+    # ranking fields.  Any failure is swallowed so the semantic path is
+    # never a hard dependency.
+    _append_semantic_retrieval_evidence(
+        retrieved_evidence=retrieved_evidence,
+        citations=citations,
+        manual_notes=manual_notes,
+        pick=pick,
+        simulation=simulation,
+    )
 
     return PickEvidencePackage(
         pick_number=pick.pick,
@@ -209,6 +230,169 @@ def _append_persisted_manual_notes(
             team_id,
             pick_no,
         )
+
+
+def _append_semantic_retrieval_evidence(
+    *,
+    retrieved_evidence: list[RetrievedEvidence],
+    citations: list[EvidenceCitation],
+    manual_notes: list[ManualNote] | None,
+    pick: SimulatedPickRead,
+    simulation: SimulateResponse,
+) -> None:
+    """Config-gated semantic retrieval over manual notes (RAG-v2-M2-E).
+
+    When ``evidence_retrieve_semantic`` is True, this function:
+
+    1. Chunks each manual note's ``title + summary + body`` via
+       :func:`chunk_text` (M2-B).
+    2. Embeds the chunks via :func:`embed_chunks` (M2-C1 fake deterministic
+       embedding).
+    3. Builds an :class:`InMemoryVectorStore` index (M2-D1).
+    4. Constructs a ``query_text`` from the pick context.
+    5. Calls :func:`retrieve_semantic` (M2-D2) to get
+       ``(RetrievedEvidence, EvidenceCitation)`` pairs.
+    6. Appends the pairs to ``retrieved_evidence`` / ``citations``.
+
+    Safety:
+    - Config-gated: no-op when ``evidence_retrieve_semantic=False``.
+    - Evidence-only: results are appended to evidence lists only; they
+      never touch ``selected_player`` / ``final_score`` /
+      ``prediction_sort_score`` / ranking / simulation / prediction.
+    - ``retrieval_score`` enters ``RetrievedEvidence`` (for sorting) but
+      is excluded from ``EvidenceCitation`` and the LLM payload whitelist.
+    - Failure-isolated: any exception is logged at WARNING (without
+      sensitive note content) and swallowed so the evidence package
+      still builds without semantic results.
+    - No hard dependency: if there are no manual notes, no chunks can be
+      built, or any step fails, the caller's evidence package is
+      unaffected.
+    """
+    settings = get_settings()
+    if not settings.evidence_retrieve_semantic:
+        return
+
+    if not manual_notes:
+        return
+
+    try:
+        # 1. Build EvidenceChunks from manual notes.
+        chunks: list[EvidenceChunk] = []
+        for index, note in enumerate(manual_notes):
+            note_source_id = (
+                str(note.note_id)
+                if note.note_id is not None
+                else f"note-{index}"
+            )
+            # Compose chunking text from title + optional summary + body.
+            text_parts = [note.title, note.body]
+            if note.summary:
+                text_parts.insert(1, note.summary)
+            note_text = "\n".join(text_parts)
+
+            note_chunks = chunk_text(
+                note_text,
+                source_type="manual_note",
+                source_id=note_source_id,
+                title=note.title,
+                entity_type=note.entity_type,
+                entity_id=note.entity_id,
+                prospect_id=note.prospect_id,
+                team_id=note.team_id,
+                pick_no=note.pick_no,
+                year=note.year,
+                url=note.source_url,
+                source_name=note.source,
+                author=note.author,
+                confidence=note.confidence,
+                relevance_reason=note.relevance_reason,
+                tags=note.tags,
+            )
+            chunks.extend(note_chunks)
+
+        if not chunks:
+            return
+
+        # 2. Embed chunks (M2-C1 fake deterministic embedding).
+        embeddings = embed_chunks(chunks)
+
+        # 3. Build in-memory vector index (M2-D1).
+        vector_store = InMemoryVectorStore()
+        vector_store.build_index(chunks, embeddings)
+
+        # 4. Construct query_text from pick context.
+        query_text = _build_semantic_query_text(pick, simulation)
+        if not query_text or not query_text.strip():
+            return
+
+        # 5. Retrieve semantic evidence (M2-D2).
+        semantic_retrieved, semantic_citations = retrieve_semantic(
+            query_text=query_text,
+            chunks=chunks,
+            vector_store=vector_store,
+            top_k=settings.evidence_semantic_top_k,
+            min_score=settings.evidence_semantic_min_score,
+        )
+
+        # 6. Append results to the evidence package.
+        retrieved_evidence.extend(semantic_retrieved)
+        citations.extend(semantic_citations)
+
+        if semantic_retrieved:
+            logger.info(
+                "Semantic retrieval attached: "
+                "year=%s pick_no=%s attached_count=%d",
+                simulation.year,
+                pick.pick,
+                len(semantic_retrieved),
+            )
+        else:
+            logger.debug(
+                "Semantic retrieval attached zero results: "
+                "year=%s pick_no=%s",
+                simulation.year,
+                pick.pick,
+            )
+    except Exception as exc:
+        # Log the failure at WARNING, then swallow so the evidence
+        # package still builds.  Only non-sensitive context is logged.
+        logger.warning(
+            "Semantic retrieval failed, falling back: "
+            "year=%s pick_no=%s exc_type=%s exc_msg=%s",
+            simulation.year,
+            pick.pick,
+            type(exc).__name__,
+            str(exc),
+        )
+
+
+def _build_semantic_query_text(
+    pick: SimulatedPickRead,
+    simulation: SimulateResponse,
+) -> str:
+    """Build a stable ``query_text`` for semantic retrieval.
+
+    Combines team abbreviation, selected player name, pick number,
+    position, and a few evidence summary fields (scouting fit positives,
+    top reasons).  All fields are stable and read-only — none of them
+    are decision / scoring / ranking fields.
+
+    The query text is used only to find relevant evidence chunks; it
+    never influences selection.
+    """
+    selected = pick.selected_player
+    parts: list[str] = [
+        pick.team.abbr,
+        selected.prospect.name,
+        f"pick {pick.pick}",
+        selected.prospect.position,
+    ]
+    # Add a few evidence summary fields for richer query context.
+    if selected.scouting_fit_positives:
+        parts.extend(selected.scouting_fit_positives[:3])
+    if selected.reasons:
+        parts.extend(selected.reasons[:2])
+    return " ".join(str(part) for part in parts if part)
 
 
 def _manual_notes_for_pick(

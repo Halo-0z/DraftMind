@@ -57,6 +57,20 @@ class Settings(BaseSettings):
     # via the API schema or controllable by the frontend.
     evidence_retrieve_manual_notes: bool = False
 
+    # ---- Semantic Retrieval (RAG-v2-M2-E) ----
+    # Config-gated semantic retrieval over manual notes.  OFF by default
+    # so existing callers are unaffected.  When True, the evidence service
+    # chunks manual notes, embeds them with the fake deterministic
+    # embedding (M2-C1), builds an in-memory vector index (M2-D1), runs
+    # semantic retrieval (M2-D2), and appends the results to
+    # retrieved_evidence / citations only — never to ranking / scoring /
+    # selection fields.  Any failure falls back to the old logic so the
+    # semantic path is never a hard dependency.  This flag is read
+    # server-side; it is NOT exposed via the API schema.
+    evidence_retrieve_semantic: bool = False
+    evidence_semantic_top_k: int = 5
+    evidence_semantic_min_score: float = 0.0
+
     # ---- News ingestion ----
     news_user_agent: str = "Mozilla/5.0 DraftMind/0.1 (Chinese)"
     news_refresh_minutes: int = 60
