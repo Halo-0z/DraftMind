@@ -1,4 +1,4 @@
-"""M4-P / M4-W tests: curated prospect overrides for import_nba_prospects.
+"""M4-P / M4-W / M4-AC tests: curated prospect overrides for import_nba_prospects.
 
 Verifies that hand-curated stats/position/archetype overrides are applied
 correctly and survive subsequent importer runs.  Canonical cases:
@@ -9,6 +9,11 @@ correctly and survive subsequent importer runs.  Canonical cases:
   template values rather than real stats.  upside_score is also lifted from
   72.6 to 78.0 (M4-V S4 sweet spot) so Brayden lands in his projected
   range 8-13.  risk_score is intentionally NOT overridden.
+* Cameron Carr (M4-AC): NBA.com heuristic stats were PG/SG-position
+  template values rather than real stats.  Source-scout verified values
+  (M4-AA) are curated here.  upside_score and risk_score are intentionally
+  NOT overridden per M4-AB preflight conclusion: stats alone are sufficient
+  to land Cameron in his projected range 12-17.
 """
 
 from __future__ import annotations
@@ -357,3 +362,143 @@ def test_apply_curated_overrides_to_db_updates_brayden_row(
     # Untouched fields
     assert reloaded.risk_score == 36.3
     assert reloaded.age == 19.5
+
+
+# ---------------------------------------------------------------------------
+# M4-AC: Cameron Carr curated override
+# ---------------------------------------------------------------------------
+
+
+def test_curated_overrides_map_contains_cameron() -> None:
+    """The override map must contain Cameron Carr for 2026."""
+    assert ("Cameron Carr", 2026) in CURATED_PROSPECT_OVERRIDES
+    override = CURATED_PROSPECT_OVERRIDES[("Cameron Carr", 2026)]
+    assert override["position"] == "SG"
+    assert override["archetype"] == "Athletic shooting wing"
+    assert override["ppg"] == 18.9
+    assert override["rpg"] == 5.8
+    assert override["apg"] == 2.6
+    assert override["fg_pct"] == 49.4
+    assert override["three_pct"] == 37.4
+    assert override["ft_pct"] == 80.1
+    assert override["stocks"] == 2.2
+    assert override["stats_source"] == "seed_manual"
+    assert override["stats_confidence"] == 0.80
+
+
+def test_cameron_override_does_not_contain_upside_risk_or_age() -> None:
+    """Cameron's override must NOT contain upside_score, risk_score, or age.
+
+    M4-AB preflight concluded stats alone are sufficient; upside_score (73.7)
+    and risk_score (36.8) are intentionally left at DB values.
+    """
+    override = CURATED_PROSPECT_OVERRIDES[("Cameron Carr", 2026)]
+    assert "upside_score" not in override
+    assert "risk_score" not in override
+    assert "age" not in override
+
+
+def test_apply_curated_override_applies_cameron_fields() -> None:
+    """apply_curated_override overwrites Cameron's heuristic fields."""
+    prospect = _make_prospect(
+        name="Cameron Carr",
+        year=2026,
+        position="SG",
+        archetype="Sophomore guard prospect",
+        ppg=14.2,
+        rpg=3.4,
+        apg=4.2,
+        fg_pct=44.5,
+        three_pct=35.5,
+        ft_pct=77.5,
+        stocks=1.2,
+        upside_score=73.7,
+        risk_score=36.8,
+        age=21.0,
+    )
+    applied = apply_curated_override(prospect)
+
+    assert applied is True
+    assert prospect.position == "SG"
+    assert prospect.archetype == "Athletic shooting wing"
+    assert prospect.ppg == 18.9
+    assert prospect.rpg == 5.8
+    assert prospect.apg == 2.6
+    assert prospect.fg_pct == 49.4
+    assert prospect.three_pct == 37.4
+    assert prospect.ft_pct == 80.1
+    assert prospect.stocks == 2.2
+    assert prospect.stats_source == "seed_manual"
+    assert prospect.stats_confidence == 0.80
+
+
+def test_apply_curated_override_preserves_cameron_upside_and_risk() -> None:
+    """apply_curated_override must NOT change Cameron's upside_score or risk_score.
+
+    M4-AB preflight concluded upside_score=73.7 and risk_score=36.8 should
+    stay; only stats/archetype are overridden.
+    """
+    prospect = _make_prospect(
+        name="Cameron Carr",
+        year=2026,
+        upside_score=73.7,
+        risk_score=36.8,
+        age=21.0,
+    )
+    apply_curated_override(prospect)
+
+    assert prospect.upside_score == 73.7
+    assert prospect.risk_score == 36.8
+    assert prospect.age == 21.0
+
+
+def test_apply_curated_overrides_to_db_updates_cameron_row(
+    db_session: Session,
+) -> None:
+    """apply_curated_overrides_to_db updates Cameron in a real DB session."""
+    p = Prospect(
+        year=2026,
+        name="Cameron Carr",
+        position="SG",
+        archetype="Sophomore guard prospect",
+        age=21.0,
+        height="6-5",
+        weight=184,
+        school_or_league="Baylor",
+        ppg=14.2,
+        rpg=3.4,
+        apg=4.2,
+        fg_pct=44.5,
+        three_pct=35.5,
+        ft_pct=77.5,
+        stocks=1.2,
+        upside_score=73.7,
+        risk_score=36.8,
+        stats_source="nba_importer_heuristic",
+        stats_confidence=0.30,
+    )
+    db_session.add(p)
+    db_session.commit()
+    db_session.expire_all()
+
+    reloaded = db_session.get(Prospect, p.id)
+    assert reloaded is not None
+    applied = apply_curated_override(reloaded)
+    db_session.commit()
+
+    assert applied is True
+    assert reloaded.position == "SG"
+    assert reloaded.archetype == "Athletic shooting wing"
+    assert reloaded.ppg == 18.9
+    assert reloaded.rpg == 5.8
+    assert reloaded.apg == 2.6
+    assert reloaded.fg_pct == 49.4
+    assert reloaded.three_pct == 37.4
+    assert reloaded.ft_pct == 80.1
+    assert reloaded.stocks == 2.2
+    assert reloaded.stats_source == "seed_manual"
+    assert reloaded.stats_confidence == 0.80
+    # Untouched fields
+    assert reloaded.upside_score == 73.7
+    assert reloaded.risk_score == 36.8
+    assert reloaded.age == 21.0

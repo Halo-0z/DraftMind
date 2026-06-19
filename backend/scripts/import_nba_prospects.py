@@ -55,6 +55,14 @@ STATS_CONFIDENCE = 0.30
 # (M4-V S4 sweet spot) so Brayden lands in his projected range 8-13
 # instead of being skipped in the first round.  risk_score is intentionally
 # left at the DB value (36.3) per M4-V conclusion.
+#
+# M4-AC: Cameron Carr's NBA.com heuristic stats were PG/SG-position
+# template values (rpg=3.4, apg=4.2, stocks=1.2, fg=44.5, three=35.5,
+# ft=77.5), not real stats.  Source-scout verified values (M4-AA) are
+# curated here.  upside_score is intentionally left at the DB value
+# (73.7) and risk_score at 36.8 per M4-AB preflight conclusion: stats
+# alone are sufficient to land Cameron in his projected range 12-17
+# (OFF #16 / ON #15) without overcorrecting or disturbing Brayden/Yaxel.
 CURATED_PROSPECT_OVERRIDES: dict[tuple[str, int], dict[str, Any]] = {
     ("Yaxel Lendeborg", 2026): {
         "position": "PF",
@@ -80,6 +88,19 @@ CURATED_PROSPECT_OVERRIDES: dict[tuple[str, int], dict[str, Any]] = {
         "ft_pct": 80.5,
         "stocks": 1.7,
         "upside_score": 78.0,
+        "stats_source": "seed_manual",
+        "stats_confidence": 0.80,
+    },
+    ("Cameron Carr", 2026): {
+        "position": "SG",
+        "archetype": "Athletic shooting wing",
+        "ppg": 18.9,
+        "rpg": 5.8,
+        "apg": 2.6,
+        "fg_pct": 49.4,
+        "three_pct": 37.4,
+        "ft_pct": 80.1,
+        "stocks": 2.2,
         "stats_source": "seed_manual",
         "stats_confidence": 0.80,
     },
