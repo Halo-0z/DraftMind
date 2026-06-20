@@ -3196,7 +3196,7 @@ class TestMarketPriorAvailabilityGuardrail:
         db_session: Session,
     ) -> None:
         """Without a matching TeamPickProjection for the current pick, the
-        floor uses the larger GENERIC_FLOOR_GAP (2.0) and sits lower than
+        floor uses the larger GENERIC_FLOOR_GAP (3.0) and sits lower than
         the team-match floor (0.5).  This is the user-spec requirement:
         a same-team market signal should be able to win a near-tie that a
         team-less signal would lose.
@@ -3218,9 +3218,9 @@ class TestMarketPriorAvailabilityGuardrail:
         )
 
         top_final = pick["candidate_board"][0]["scores"]["final_score"]
-        # Generic floor = original_top - 2.0 (vs the team-match 0.5).
+        # Generic floor = original_top - 3.0 (vs the team-match 0.5).
         assert protected_candidate["prediction_sort_score"] == pytest.approx(
-            top_final - 2.0, abs=0.01
+            top_final - 3.0, abs=0.01
         )
         notes = protected_candidate.get("prediction_selection_notes") or []
         assert any("availability protection" in note.lower() for note in notes)

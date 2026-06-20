@@ -57,7 +57,9 @@ MARKET_PRIOR_HARD_REJECT_GAP = 20.0
 # signal, the floor is a little lower: it still prevents an abnormal slide
 # but does not overpower an in-range competitor from a different team.
 MARKET_PRIOR_TEAM_MATCH_FLOOR_GAP = 0.5
-MARKET_PRIOR_GENERIC_FLOOR_GAP = 2.0
+MARKET_PRIOR_GENERIC_FLOOR_GAP = 3.0
+NEAR_EXPECTED_PICK_BONUS = 0.50
+NEAR_EXPECTED_PICK_MAX_DISTANCE = 1
 # Only genuine market / human projection sources may trigger the floor.
 # ``consensus_reference`` = market prior; ``manual_projection`` = explicit
 # human prediction.  ``seed_projection`` is demo/development data and must
@@ -549,6 +551,16 @@ def calculate_prediction_sort_score(
         reach_penalty = min(14.0, 6.0 + (range_min - pick_no - 2) * 1.5)
         adjustment -= reach_penalty * max(source_weight, 0.3)
         notes.append(f"Reach penalty applied: {round(reach_penalty, 1)}.")
+
+    if (
+        expected_pick is not None
+        and _is_market_prior_availability_source(
+            getattr(prospect_projection, "source", None)
+        )
+        and abs(pick_no - expected_pick) <= NEAR_EXPECTED_PICK_MAX_DISTANCE
+    ):
+        adjustment += NEAR_EXPECTED_PICK_BONUS
+        notes.append("Near expected-pick bonus applied.")
 
     sort_score = final_score + adjustment
     if not eligible:

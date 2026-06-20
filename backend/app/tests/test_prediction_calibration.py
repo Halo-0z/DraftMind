@@ -204,6 +204,115 @@ def test_news_display_only_projection_source_does_not_boost_selection() -> None:
     assert any("within projected draft range" in note for note in notes)
 
 
+def test_near_expected_pick_bonus_adds_to_prediction_sort_score() -> None:
+    near_score, near_eligible, near_notes = calculate_prediction_sort_score(
+        pick_no=13,
+        ranking=_ranking(final_score=60.0),
+        prospect_projection=SimpleNamespace(
+            expected_pick=14,
+            draft_range_min=12,
+            draft_range_max=17,
+            tier=3,
+            source="consensus_reference",
+            confidence=0.74,
+        ),
+        team_projection=None,
+        original_top_final_score=67.0,
+    )
+    far_score, far_eligible, far_notes = calculate_prediction_sort_score(
+        pick_no=13,
+        ranking=_ranking(final_score=60.0),
+        prospect_projection=SimpleNamespace(
+            expected_pick=16,
+            draft_range_min=12,
+            draft_range_max=17,
+            tier=3,
+            source="consensus_reference",
+            confidence=0.74,
+        ),
+        team_projection=None,
+        original_top_final_score=67.0,
+    )
+
+    assert near_eligible is True
+    assert far_eligible is True
+    assert near_score == far_score + 0.5
+    assert any("Near expected-pick bonus applied." in note for note in near_notes)
+    assert all("Near expected-pick bonus" not in note for note in far_notes)
+
+
+def test_near_expected_pick_bonus_requires_expected_pick() -> None:
+    with_expected, _, with_notes = calculate_prediction_sort_score(
+        pick_no=13,
+        ranking=_ranking(final_score=60.0),
+        prospect_projection=SimpleNamespace(
+            expected_pick=13,
+            draft_range_min=12,
+            draft_range_max=17,
+            tier=3,
+            source="consensus_reference",
+            confidence=0.74,
+        ),
+        team_projection=None,
+        original_top_final_score=67.0,
+    )
+    without_expected, _, without_notes = calculate_prediction_sort_score(
+        pick_no=13,
+        ranking=_ranking(final_score=60.0),
+        prospect_projection=SimpleNamespace(
+            expected_pick=None,
+            draft_range_min=12,
+            draft_range_max=17,
+            tier=3,
+            source="consensus_reference",
+            confidence=0.74,
+        ),
+        team_projection=None,
+        original_top_final_score=67.0,
+    )
+
+    assert with_expected == without_expected + 0.5
+    assert any("Near expected-pick bonus applied." in note for note in with_notes)
+    assert all("Near expected-pick bonus" not in note for note in without_notes)
+
+
+def test_near_expected_pick_bonus_does_not_mutate_final_score() -> None:
+    ranking = _ranking(final_score=60.0)
+
+    sort_score, _, notes = calculate_prediction_sort_score(
+        pick_no=13,
+        ranking=ranking,
+        prospect_projection=SimpleNamespace(
+            expected_pick=13,
+            draft_range_min=12,
+            draft_range_max=17,
+            tier=3,
+            source="consensus_reference",
+            confidence=0.74,
+        ),
+        team_projection=None,
+        original_top_final_score=67.0,
+    )
+
+    assert ranking.final_score == 60.0
+    assert sort_score > ranking.final_score
+    assert any("Near expected-pick bonus applied." in note for note in notes)
+
+
+def test_near_expected_pick_bonus_requires_projection() -> None:
+    sort_score, eligible, notes = calculate_prediction_sort_score(
+        pick_no=13,
+        ranking=_ranking(final_score=60.0),
+        prospect_projection=None,
+        team_projection=None,
+        original_top_final_score=67.0,
+    )
+
+    assert eligible is True
+    assert sort_score == 60.0
+    assert all("Near expected-pick bonus" not in note for note in notes)
+
+
 # ---------------------------------------------------------------------------
 # B0-I: high market-prior availability guardrail
 # ---------------------------------------------------------------------------
@@ -378,7 +487,7 @@ def test_availability_guardrail_does_not_trigger_past_range_plus_grace() -> None
 
 def test_availability_guardrail_generic_floor_is_weaker_than_team_match_floor() -> None:
     """Without a TeamPickProjection for the current pick, the floor uses the
-    larger GENERIC_FLOOR_GAP (2.0) and sits lower than the team-match floor
+    larger GENERIC_FLOOR_GAP (3.0) and sits lower than the team-match floor
     (0.5).  Both still prevent an abnormal slide, but a same-team signal is
     stronger and can win a near-tie that the generic floor would lose."""
     team_match_score, _, _ = calculate_prediction_sort_score(
@@ -400,7 +509,8 @@ def test_availability_guardrail_generic_floor_is_weaker_than_team_match_floor() 
         original_top_final_score=67.1,
     )
 
-    assert team_match_score > generic_score  # 66.6 vs 65.1
+    assert team_match_score > generic_score  # 66.6 vs 64.1
+    assert generic_score == 64.1
     # Generic floor still triggers protection (just at a lower level).
     assert any("availability protection" in note.lower() for note in generic_notes)
     assert all("matching team projection signal" not in note for note in generic_notes)
@@ -505,9 +615,9 @@ def test_seed_projection_still_gets_ordinary_calibration_adjustment() -> None:
     # The seed prospect IS eligible and gets the ordinary range/tier/team
     # adjustments (so sort_score rises above the raw 60.0), but it must NOT
     # be lifted to the team-match floor (67.1 - 0.5 = 66.6) or even the
-    # generic floor (67.1 - 2.0 = 65.1).
+    # generic floor (67.1 - 3.0 = 64.1).
     assert sort_score > 60.0
-    assert sort_score < 65.1  # well below the generic floor
+    assert sort_score < 64.1  # well below the generic floor
     assert not any("availability protection" in note.lower() for note in notes)
 
 
@@ -553,7 +663,7 @@ def test_availability_floor_triggers_for_manual_projection_prospect_source() -> 
 def test_display_only_team_source_falls_back_to_generic_floor() -> None:
     """When the prospect source is allowed (consensus_reference) but the
     team projection's source is display-only / unknown, the team_match flag
-    must be False so the weaker generic floor (orig_top - 2.0) is used
+    must be False so the weaker generic floor (orig_top - 3.0) is used
     instead of the stronger team-match floor (orig_top - 0.5).
 
     This protects against future display-only / unknown team sources being
@@ -571,8 +681,8 @@ def test_display_only_team_source_falls_back_to_generic_floor() -> None:
     )
 
     assert eligible is True
-    # Generic floor = 67.1 - 2.0 = 65.1 (NOT the team-match 66.6).
-    assert sort_score == 65.1
+    # Generic floor = 67.1 - 3.0 = 64.1 (NOT the team-match 66.6).
+    assert sort_score == 64.1
     notes_joined = " ".join(notes).lower()
     assert "availability protection" in notes_joined
     # And the note must NOT claim a matching team signal.
@@ -616,6 +726,83 @@ def test_availability_floor_does_not_trigger_for_expected_pick_above_60() -> Non
     # The availability floor must NOT trigger for expected_pick=65.
     notes_joined = " ".join(notes).lower()
     assert "availability protection" not in notes_joined
-    # The prospect should not get the floor boost (66.6 or 65.1).
+    # The prospect should not get the floor boost (66.6 or 64.1).
     # With expected_pick=65, the normal adjustment applies (small boost).
-    assert sort_score < 65.0  # well below the floor of 65.1
+    assert sort_score < 64.0  # well below the floor of 64.1
+
+
+def test_near_expected_pick_candidate_can_pass_farther_out_of_range_candidate() -> None:
+    """M4-AL: A candidate near his expected pick should beat an otherwise
+    comparable candidate whose expected pick is farther from the current pick.
+    This covers the Cameron-vs-Jayden shape without name or pick hard-coding
+    in the service."""
+    near_score, _, near_notes = calculate_prediction_sort_score(
+        pick_no=13,
+        ranking=_ranking(final_score=60.0),
+        prospect_projection=SimpleNamespace(
+            expected_pick=14,
+            draft_range_min=12,
+            draft_range_max=17,
+            tier=3,
+            source="consensus_reference",
+            confidence=0.74,
+        ),
+        team_projection=None,
+        original_top_final_score=67.0,
+    )
+    farther_score, _, farther_notes = calculate_prediction_sort_score(
+        pick_no=13,
+        ranking=_ranking(final_score=60.2),
+        prospect_projection=SimpleNamespace(
+            expected_pick=16,
+            draft_range_min=15,
+            draft_range_max=24,
+            tier=4,
+            source="consensus_reference",
+            confidence=0.74,
+        ),
+        team_projection=None,
+        original_top_final_score=67.0,
+    )
+
+    assert near_score > farther_score
+    assert any("Near expected-pick bonus applied." in note for note in near_notes)
+    assert all("Near expected-pick bonus" not in note for note in farther_notes)
+
+
+def test_exact_expected_pick_candidate_keeps_edge_over_older_market_prior() -> None:
+    """M4-AL: Exact expected-pick fit should get the bonus, while a candidate
+    with an earlier expected pick should not.  This covers the Niko-vs-Bennett
+    shape without relying on player names."""
+    exact_score, _, exact_notes = calculate_prediction_sort_score(
+        pick_no=28,
+        ranking=_ranking(final_score=61.0),
+        prospect_projection=SimpleNamespace(
+            expected_pick=28,
+            draft_range_min=24,
+            draft_range_max=34,
+            tier=4,
+            source="consensus_reference",
+            confidence=0.54,
+        ),
+        team_projection=None,
+        original_top_final_score=67.0,
+    )
+    earlier_market_score, _, earlier_notes = calculate_prediction_sort_score(
+        pick_no=28,
+        ranking=_ranking(final_score=61.0),
+        prospect_projection=SimpleNamespace(
+            expected_pick=21,
+            draft_range_min=18,
+            draft_range_max=26,
+            tier=4,
+            source="consensus_reference",
+            confidence=0.64,
+        ),
+        team_projection=None,
+        original_top_final_score=67.0,
+    )
+
+    assert exact_score > earlier_market_score
+    assert any("Near expected-pick bonus applied." in note for note in exact_notes)
+    assert all("Near expected-pick bonus" not in note for note in earlier_notes)
