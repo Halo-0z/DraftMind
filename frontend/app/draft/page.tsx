@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ThemeToggle } from "../components/ThemeToggle";
 import {
   AgentAskResponse,
@@ -470,6 +470,7 @@ export default function DraftPage() {
   const [isSimulating, setIsSimulating] = useState(false);
   const [isRefreshingNews, setIsRefreshingNews] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const simulationRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -837,6 +838,13 @@ export default function DraftPage() {
         locked_picks: cleaned.length > 0 ? cleaned : undefined,
       });
       setSimulation(result);
+      // Scroll to the simulation board after React renders it.
+      setTimeout(() => {
+        simulationRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      }, 0);
     } catch (err) {
       setError(formatApiError(err, "模拟选秀失败，请检查后端服务或 draft_order 数据。"));
     } finally {
@@ -1078,6 +1086,13 @@ export default function DraftPage() {
 
           <RosterPanel isLoading={isLoadingRoster} roster={roster} />
 
+          <ModeSummary
+            lockedCount={lockedPicks.length}
+            rounds={simulationRounds}
+            scoutingTiebreaker={useScoutingTiebreaker}
+            usePredictionCalibration={usePredictionCalibration}
+          />
+
           <div className="mt-5 rounded-md border border-white/10 bg-court-panel p-5">
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-court-muted">
               完整模拟
@@ -1086,10 +1101,10 @@ export default function DraftPage() {
               按选秀顺位逐签模拟，已选球员会从后续候选池移除。
             </p>
 
-            <div className="mt-5">
-              <p className="text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
-                模拟范围
-              </p>
+            <details className="mt-4 rounded-md border border-white/10 bg-court-black/55 p-3" open>
+              <summary className="cursor-pointer text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
+                模拟范围 · {simulationRounds === 1 ? "第一轮 30 签" : "两轮 60 签"}
+              </summary>
               <div className="mt-3 grid grid-cols-2 overflow-hidden rounded-md border border-white/10 bg-court-black">
                 {[
                   { label: "第一轮", rounds: 1 as const, detail: "30 签" },
@@ -1119,12 +1134,12 @@ export default function DraftPage() {
                 当前将模拟 {simulationRounds === 1 ? "第一轮" : "两轮"} ·{" "}
                 {simulationPickLimit} 签；超出范围的锁定签会保留在表单中，但不会发送到本次模拟。
               </p>
-            </div>
+            </details>
 
-            <div className="mt-5 rounded-md border border-white/10 bg-court-black/55 p-4">
-              <p className="text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
-                球探适配
-              </p>
+            <details className="mt-3 rounded-md border border-white/10 bg-court-black/55 p-3">
+              <summary className="cursor-pointer text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
+                球探适配 · {showScoutingDiagnostics ? "诊断 ON" : "诊断 OFF"}{useScoutingTiebreaker ? " · 打破平局 ON" : ""}
+              </summary>
               <div className="mt-3 grid gap-3">
                 <label className="flex cursor-pointer items-start gap-3 rounded-md border border-white/10 bg-white/[0.025] p-3 transition hover:border-court-line/50">
                   <input
@@ -1171,12 +1186,12 @@ export default function DraftPage() {
                   </span>
                 </label>
               </div>
-            </div>
+            </details>
 
-            <div className="mt-5 rounded-md border border-white/10 bg-court-black/55 p-4">
-              <p className="text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
-                预测信息
-              </p>
+            <details className="mt-3 rounded-md border border-white/10 bg-court-black/55 p-3" open={usePredictionCalibration || showPredictionShadow}>
+              <summary className="cursor-pointer text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
+                预测信息 · {usePredictionCalibration ? "辅助选人 ON" : showPredictionShadow ? "参考 ON" : "OFF"}
+              </summary>
               <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-md border border-sky-300/20 bg-sky-300/[0.035] p-3 transition hover:border-sky-300/50">
                 <input
                   checked={showPredictionShadow}
@@ -1215,107 +1230,117 @@ export default function DraftPage() {
                   </span>
                 </span>
               </label>
-            </div>
+            </details>
 
             {/* Phase 3: locked picks / user override editor.
                 MVP uses a prospect_id dropdown.  Backend also supports
                 prospect_name free-text matching, but the UI does not
                 expose that to avoid name typos during demo. */}
-            <div className="mt-5">
-              <div className="flex items-end justify-between gap-3">
-                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
-                  手动锁定顺位
-                </p>
-                <button
-                  className="h-8 rounded-md border border-court-line/50 px-3 text-[11px] font-black uppercase tracking-[0.16em] text-court-line transition hover:border-court-line hover:bg-court-line hover:text-court-black disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={prospects.length === 0}
-                  onClick={() => {
-                    setLockedPicks((arr) => [
-                      ...arr,
-                      { pick_no: 1, prospect_id: null },
-                    ]);
-                  }}
-                  type="button"
-                >
-                  + 添加锁定
-                </button>
-              </div>
-
-              {lockedPicks.length === 0 ? (
-                <p className="mt-3 text-xs leading-5 text-court-muted">
-                  未锁定任何顺位，将使用自动模拟。系统也支持按球员姓名锁定，但本阶段界面暂未开放。
-                </p>
-              ) : (
-                <div className="mt-3 grid gap-2">
-                  {lockedPicks.map((lp, idx) => (
-                    <div
-                      className="grid grid-cols-[68px_1fr_32px] items-center gap-2"
-                      key={`locked-${idx}`}
-                    >
-                      <input
-                        aria-label="locked pick number"
-                        className="h-9 rounded-md border border-white/10 bg-court-black px-2 text-sm font-bold text-court-text outline-none transition focus:border-court-line"
-                        max={60}
-                        min={1}
-                        type="number"
-                        value={lp.pick_no}
-                        onChange={(event) => {
-                          const next = Number(event.target.value);
-                          setLockedPicks((arr) =>
-                            arr.map((row, i) =>
-                              i === idx
-                                ? { ...row, pick_no: Number.isFinite(next) ? next : 1 }
-                                : row,
-                            ),
-                          );
-                        }}
-                      />
-                      <select
-                        aria-label="locked prospect"
-                        className="h-9 rounded-md border border-white/10 bg-court-black px-2 text-sm font-semibold text-court-text outline-none transition focus:border-court-line"
-                        disabled={prospects.length === 0}
-                        value={lp.prospect_id == null ? "" : String(lp.prospect_id)}
-                        onChange={(event) => {
-                          const raw = event.target.value;
-                          const value = raw === "" ? null : Number(raw);
-                          setLockedPicks((arr) =>
-                            arr.map((row, i) =>
-                              i === idx ? { ...row, prospect_id: value } : row,
-                            ),
-                          );
-                        }}
-                      >
-                        <option value="">选择 prospect</option>
-                        {prospects.map((p) => (
-                          <option key={p.id} value={String(p.id)}>
-                            #{p.id} · {p.name} · {p.position} · UP {p.upside_score}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        aria-label="remove locked pick"
-                        className="h-9 rounded-md border border-white/15 bg-court-black text-sm font-black text-court-muted transition hover:border-red-300/60 hover:text-red-200"
-                        onClick={() => {
-                          setLockedPicks((arr) => arr.filter((_, i) => i !== idx));
-                        }}
-                        type="button"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
+            <details className="mt-3 rounded-md border border-white/10 bg-court-black/55 p-3">
+              <summary className="cursor-pointer text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
+                手动锁定顺位 · {lockedPicks.length > 0 ? `${lockedPicks.length} 条` : "OFF"}
+              </summary>
+              <div className="mt-3">
+                <div className="flex items-end justify-between gap-3">
+                  <p className="text-xs leading-5 text-court-muted">
+                    强制指定某顺位选择某球员。未锁定时使用自动模拟。
+                  </p>
+                  <button
+                    className="h-8 rounded-md border border-court-line/50 px-3 text-[11px] font-black uppercase tracking-[0.16em] text-court-line transition hover:border-court-line hover:bg-court-line hover:text-court-black disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={prospects.length === 0}
+                    onClick={() => {
+                      setLockedPicks((arr) => [
+                        ...arr,
+                        { pick_no: 1, prospect_id: null },
+                      ]);
+                    }}
+                    type="button"
+                  >
+                    + 添加锁定
+                  </button>
                 </div>
-              )}
-            </div>
 
+                {lockedPicks.length === 0 ? (
+                  <p className="mt-3 text-xs leading-5 text-court-muted">
+                    未锁定任何顺位，将使用自动模拟。
+                  </p>
+                ) : (
+                  <div className="mt-3 grid gap-2">
+                    {lockedPicks.map((lp, idx) => (
+                      <div
+                        className="grid grid-cols-[68px_1fr_32px] items-center gap-2"
+                        key={`locked-${idx}`}
+                      >
+                        <input
+                          aria-label="locked pick number"
+                          className="h-9 rounded-md border border-white/10 bg-court-black px-2 text-sm font-bold text-court-text outline-none transition focus:border-court-line"
+                          max={60}
+                          min={1}
+                          type="number"
+                          value={lp.pick_no}
+                          onChange={(event) => {
+                            const next = Number(event.target.value);
+                            setLockedPicks((arr) =>
+                              arr.map((row, i) =>
+                                i === idx
+                                  ? { ...row, pick_no: Number.isFinite(next) ? next : 1 }
+                                  : row,
+                              ),
+                            );
+                          }}
+                        />
+                        <select
+                          aria-label="locked prospect"
+                          className="h-9 rounded-md border border-white/10 bg-court-black px-2 text-sm font-semibold text-court-text outline-none transition focus:border-court-line"
+                          disabled={prospects.length === 0}
+                          value={lp.prospect_id == null ? "" : String(lp.prospect_id)}
+                          onChange={(event) => {
+                            const raw = event.target.value;
+                            const value = raw === "" ? null : Number(raw);
+                            setLockedPicks((arr) =>
+                              arr.map((row, i) =>
+                                i === idx ? { ...row, prospect_id: value } : row,
+                              ),
+                            );
+                          }}
+                        >
+                          <option value="">选择 prospect</option>
+                          {prospects.map((p) => (
+                            <option key={p.id} value={String(p.id)}>
+                              #{p.id} · {p.name} · {p.position} · UP {p.upside_score}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          aria-label="remove locked pick"
+                          className="h-9 rounded-md border border-white/15 bg-court-black text-sm font-black text-court-muted transition hover:border-red-300/60 hover:text-red-200"
+                          onClick={() => {
+                            setLockedPicks((arr) => arr.filter((_, i) => i !== idx));
+                          }}
+                          type="button"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </details>
+          </div>
+
+          <div className="sticky bottom-0 z-10 mt-5 rounded-t-md border-t border-white/10 bg-court-black/95 p-4 backdrop-blur">
             <button
-              className="mt-5 h-11 w-full rounded-md border border-court-line/50 bg-court-black text-sm font-black text-court-line transition hover:border-court-line hover:bg-court-line hover:text-court-black disabled:cursor-not-allowed disabled:opacity-60"
+              className="h-12 w-full rounded-md border border-court-line/50 bg-court-black text-base font-black text-court-line transition hover:border-court-line hover:bg-court-line hover:text-court-black disabled:cursor-not-allowed disabled:opacity-60"
               disabled={isSimulating}
               onClick={handleSimulateDraft}
               type="button"
             >
-              {isSimulating ? "模拟中..." : "模拟完整顺位"}
+              {isSimulating ? "模拟中..." : `模拟完整顺位 · ${simulationPickLimit} 签`}
             </button>
+            <p className="mt-2 text-center text-[10px] leading-4 text-court-muted">
+              {simulationRounds === 1 ? "30 签模拟" : "60 签完整模拟"} · 预测{usePredictionCalibration ? "辅助 ON" : "OFF"} · 锁定{lockedPicks.length > 0 ? `${lockedPicks.length} 条` : "OFF"}
+            </p>
           </div>
         </aside>
 
@@ -1334,13 +1359,16 @@ export default function DraftPage() {
               setQuestion={setQuestion}
             />
           ) : null}
+          <div ref={simulationRef}>
+            {simulation ? <SimulationBoard simulation={simulation} /> : null}
+          </div>
           <NewsPanel
             articles={news}
+            defaultExpanded={!simulation}
             isRefreshing={isRefreshingNews}
             onRefresh={handleRefreshNews}
             prospectName={recommendation?.recommended_player.prospect.name ?? null}
           />
-          {simulation ? <SimulationBoard simulation={simulation} /> : null}
         </section>
       </section>
     </main>
@@ -2126,8 +2154,65 @@ function CandidateBoardPreview({
   );
 }
 
+type MarketTop30Player = {
+  name: string;
+  expectedPick: number;
+  actualPick: number | null;
+};
+
+function getMarketExpectedPick(player: RankedProspect): number | null {
+  return player.market_expected_pick ?? player.projection_expected_pick ?? null;
+}
+
+function parseMarketTop30MissingWarning(
+  warning: string,
+): { name: string; expectedPick: number } | null {
+  const match = warning.match(
+    /^Market top-30 missing warning:\s*(.+?)\s+expected\s+#(\d+)\s+was not selected in this simulation\.$/i,
+  );
+  if (!match) return null;
+  return { name: match[1], expectedPick: Number(match[2]) };
+}
+
 function SimulationBoard({ simulation }: { simulation: Simulation }) {
-  const missingWarnings = simulation.market_top30_missing_warnings ?? [];
+  // Build the complete list of top-30 market/projection players and where
+  // (if anywhere) they were selected in this simulation.
+  const selectedTop30: MarketTop30Player[] = simulation.picks.flatMap((pick) => {
+    const expected = getMarketExpectedPick(pick.selected_player);
+    if (expected == null || expected > 30) return [];
+    return [
+      {
+        name: pick.selected_player.prospect.name,
+        expectedPick: expected,
+        actualPick: pick.pick,
+      },
+    ];
+  });
+
+  const missingTop30: MarketTop30Player[] = (
+    simulation.market_top30_missing_warnings ?? []
+  )
+    .map(parseMarketTop30MissingWarning)
+    .filter((item): item is { name: string; expectedPick: number } => item !== null)
+    .map((item) => ({ ...item, actualPick: null }));
+
+  // Combine both groups. If a player appears in both (should not happen),
+  // prefer the selected version.
+  const allTop30ByName = new Map<string, MarketTop30Player>();
+  [...missingTop30, ...selectedTop30].forEach((player) => {
+    allTop30ByName.set(player.name, player);
+  });
+  const allTop30 = Array.from(allTop30ByName.values());
+
+  const notInFirstRound = allTop30.filter(
+    (player) => player.actualPick == null || player.actualPick > 30,
+  );
+  const notSelectedAtAll = simulation.total_picks >= 60 ? missingTop30 : [];
+  const bigSliders = allTop30.filter(
+    (player) =>
+      player.actualPick != null &&
+      player.actualPick - player.expectedPick >= 8,
+  );
 
   return (
     <section className="rounded-md border border-white/10 bg-court-panel p-5">
@@ -2146,20 +2231,79 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
         {simulation.source ?? "选秀顺位来源暂不可用"} · 每一签都会重新计算实时可选候选池，并记录交易评估。
       </p>
 
-      {missingWarnings.length > 0 ? (
+      {notInFirstRound.length > 0 ? (
         <div className="mt-5 rounded-md border border-amber-300/30 bg-amber-300/[0.07] p-4">
           <p className="text-xs font-black uppercase tracking-[0.16em] text-amber-200">
-            选秀行情 Top-30 未选中提示
+            选秀行情 Top-30 未进入首轮提示
           </p>
           <ul className="mt-3 grid gap-1.5 text-sm font-bold leading-6 text-amber-100">
-            {missingWarnings.map((warning, index) => (
-              <li className="flex gap-2" key={`${warning}-${index}`}>
-                <span aria-hidden="true" className="text-amber-300">
+            {notInFirstRound.map((player, index) => {
+              const text =
+                player.actualPick == null ? (
+                  <>
+                    {player.name} 预计第 {player.expectedPick} 顺位，本次{" "}
+                    {simulation.total_picks} 签未选中。
+                  </>
+                ) : (
+                  <>
+                    {player.name} 预计第 {player.expectedPick} 顺位，本次第{" "}
+                    {player.actualPick} 顺位，滑落{" "}
+                    {player.actualPick - player.expectedPick} 位。
+                  </>
+                );
+              return (
+                <li className="flex gap-2" key={`not-in-first-${player.name}-${index}`}>
+                  <span aria-hidden="true" className="text-amber-300">
+                    -
+                  </span>
+                  <span>{text}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
+
+      {notSelectedAtAll.length > 0 ? (
+        <div className="mt-5 rounded-md border border-red-300/30 bg-red-300/[0.07] p-4">
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-red-200">
+            Top-30 完全未被 60 签选中
+          </p>
+          <ul className="mt-3 grid gap-1.5 text-sm font-bold leading-6 text-red-100">
+            {notSelectedAtAll.map((player, index) => (
+              <li className="flex gap-2" key={`not-selected-${player.name}-${index}`}>
+                <span aria-hidden="true" className="text-red-300">
                   -
                 </span>
-                <span>{formatMarketWarning(warning)}</span>
+                <span>
+                  {player.name} 预计第 {player.expectedPick} 顺位，本次 60 签未选中。
+                </span>
               </li>
             ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {bigSliders.length > 0 ? (
+        <div className="mt-5 rounded-md border border-orange-500/40 bg-orange-200/20 p-4">
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-orange-950">
+            行情大幅滑落
+          </p>
+          <ul className="mt-3 grid gap-1.5 text-sm font-bold leading-6 text-orange-950">
+            {bigSliders.map((player, index) =>
+              player.actualPick == null ? null : (
+                <li className="flex gap-2" key={`slider-${player.name}-${index}`}>
+                  <span aria-hidden="true" className="text-orange-700">
+                    -
+                  </span>
+                  <span>
+                    {player.name} 预计第 {player.expectedPick} 顺位，本次第{" "}
+                    {player.actualPick} 顺位，滑落{" "}
+                    {player.actualPick - player.expectedPick} 位。
+                  </span>
+                </li>
+              ),
+            )}
           </ul>
         </div>
       ) : null}
@@ -2298,13 +2442,15 @@ function NewsPanel({
   isRefreshing,
   onRefresh,
   prospectName,
+  defaultExpanded = false,
 }: {
   articles: NewsArticle[];
   isRefreshing: boolean;
   onRefresh: () => void;
   prospectName: string | null;
+  defaultExpanded?: boolean;
 }) {
-  const [isNewsExpanded, setIsNewsExpanded] = useState(true);
+  const [isNewsExpanded, setIsNewsExpanded] = useState(defaultExpanded);
 
   return (
     <section className="rounded-md border border-white/10 bg-court-panel p-5">
@@ -2379,6 +2525,37 @@ function NewsPanel({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function ModeSummary({
+  rounds,
+  usePredictionCalibration,
+  scoutingTiebreaker,
+  lockedCount,
+}: {
+  rounds: 1 | 2;
+  usePredictionCalibration: boolean;
+  scoutingTiebreaker: boolean;
+  lockedCount: number;
+}) {
+  const picksLabel = rounds === 1 ? "30 签" : "60 签";
+  const predictionLabel = usePredictionCalibration ? "预测辅助 ON" : "预测辅助 OFF";
+  const scoutingLabel = scoutingTiebreaker ? "同档适配 ON" : "同档适配 OFF";
+  const lockLabel = lockedCount > 0 ? `手动锁定 ${lockedCount} 条` : "手动锁定 OFF";
+
+  return (
+    <div className="mt-5 rounded-md border border-court-line/25 bg-court-line/[0.06] p-4">
+      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-court-line">
+        当前模式
+      </p>
+      <p className="mt-1.5 text-sm font-black text-court-text">
+        {picksLabel} · {predictionLabel} · {scoutingLabel} · {lockLabel}
+      </p>
+      <p className="mt-1 text-[11px] leading-5 text-court-muted">
+        Draft-Day Conservative Final Mode · 完整模拟前无需滚动即可看到主按钮
+      </p>
+    </div>
   );
 }
 
