@@ -4,10 +4,12 @@ Tests cover:
   1. Default ``draft_day_accuracy_mode=False`` keeps Auto Simulation unchanged.
   2. ``draft_day_accuracy_mode=True`` selects unique players (no duplicates).
   3. ``draft_day_accuracy_mode=True`` does not select withdrawn / unavailable.
-  4. Safety anchors (Brayden / Yaxel / Cameron / Niko) stay in range.
+  4. Safety anchors (Brayden / Yaxel / Cameron) stay in range.
+     (Niko Bundalo anchor CANCELLED in M4-CL — he is now unavailable.)
   5. Market-risk players are improved (selected / earlier) vs default mode.
   6. API accepts ``draft_day_accuracy_mode`` and returns ``mode`` identifier.
   7. Default API call (no field) still passes.
+  8. M4-CL: return-to-school / not-final-entrant players are not selected.
 """
 
 from __future__ import annotations
@@ -28,11 +30,12 @@ from scripts import seed_db
 # ---------------------------------------------------------------------------
 
 # (name, position, upside_score, expected_pick, range_min, range_max, tier)
+# M4-CL: Niko Bundalo anchor CANCELLED — he is now in the return-to-school /
+# not-final-entrant unavailable set, so he can no longer be a safety anchor.
 _SAFETY_ANCHOR_SPECS: tuple[tuple[str, str, float, int, int, int, int], ...] = (
     ("Brayden Burries", "SG", 84.0, 10, 8, 13, 3),
     ("Yaxel Lendeborg", "PF", 82.0, 12, 11, 14, 3),
     ("Cameron Carr", "PG", 75.0, 14, 12, 17, 3),
-    ("Niko Bundalo", "PF", 73.0, 28, 24, 34, 5),
 )
 
 # Market-risk players from M4-CE section 7. These are players S0 misses or
@@ -59,6 +62,36 @@ _WITHDRAWN_NAMES: tuple[str, ...] = (
     "Francesco Ferrari",
     "Luigi Suigo",
 )
+
+# M4-CL: return-to-school / not-in-final-early-entry unavailable names.
+# These underclass / return-to-school / transfer players are not draftable
+# for the 2026 NBA Draft final board and must be filtered out by the
+# availability guard before S1 selection.
+_RETURN_TO_SCHOOL_NAMES: tuple[str, ...] = (
+    "Cayden Boozer",
+    "Braylon Mullins",
+    "Nikolas Khamenia",
+    "Jasper Johnson",
+    "Niko Bundalo",
+)
+
+# M4-CL: projections for return-to-school players. These are seeded into
+# the test fixture WITH attractive projections (matching the positions
+# where the buggy final board originally selected them) so that S1 would
+# WANT to pick them. The availability guard must filter them out before
+# S1 selection, proving the guard overrides the S1 temptation.
+# (name, position, upside_score, expected_pick, range_min, range_max, tier)
+_RETURN_TO_SCHOOL_SPECS: tuple[tuple[str, str, float, int, int, int, int], ...] = (
+    ("Braylon Mullins", "SG", 76.0, 13, 10, 18, 3),
+    ("Nikolas Khamenia", "PF", 74.0, 21, 18, 25, 4),
+    ("Cayden Boozer", "PG", 75.0, 25, 20, 30, 4),
+    ("Jasper Johnson", "SG", 72.0, 29, 25, 34, 5),
+    ("Niko Bundalo", "PF", 73.0, 33, 28, 38, 5),
+)
+
+# Combined unavailable names (withdrawn + return-to-school) for tests that
+# want to assert NONE of these are selected.
+_UNAVAILABLE_NAMES: tuple[str, ...] = _WITHDRAWN_NAMES + _RETURN_TO_SCHOOL_NAMES
 
 
 def _clear_2026_draft_order(db: Session) -> None:
@@ -168,7 +201,13 @@ def _seed_prospect_with_projection(
 
 
 def _seed_full_test_fixture(db: Session) -> None:
-    """Seed demo data + safety anchors + market-risk + extra draft order."""
+    """Seed demo data + safety anchors + market-risk + extra draft order.
+
+    M4-CL: also seeds return-to-school / not-final-entrant prospects WITH
+    attractive projections. These players are in the DB (so the candidate
+    list would include them) but the availability guard must filter them
+    out before S1 selection.
+    """
     _clear_2026_draft_order(db)
     seed_db.seed_demo_data(db)
     # Overlay safety anchors and market-risk prospects with projections.
@@ -179,6 +218,14 @@ def _seed_full_test_fixture(db: Session) -> None:
             expected=spec[3], rmin=spec[4], rmax=spec[5], tier=spec[6],
         )
     for spec in _MARKET_RISK_SPECS:
+        _seed_prospect_with_projection(
+            db,
+            name=spec[0], position=spec[1], upside=spec[2],
+            expected=spec[3], rmin=spec[4], rmax=spec[5], tier=spec[6],
+        )
+    # M4-CL: seed return-to-school players with attractive projections.
+    # The availability guard must filter them out before selection.
+    for spec in _RETURN_TO_SCHOOL_SPECS:
         _seed_prospect_with_projection(
             db,
             name=spec[0], position=spec[1], upside=spec[2],
@@ -339,12 +386,131 @@ class TestNoWithdrawnSelected:
 
 
 # ---------------------------------------------------------------------------
+# 3b. M4-CL: No return-to-school / not-final-entrant players selected
+# ---------------------------------------------------------------------------
+
+
+class TestNoReturnToSchoolSelected:
+    """M4-CL: return-to-school / not-final-entrant players must NOT be
+    selected in any simulation mode.
+
+    These players are not draftable for the 2026 NBA Draft final board:
+      * Cayden Boozer
+      * Braylon Mullins
+      * Nikolas Khamenia
+      * Jasper Johnson
+      * Niko Bundalo
+
+    The availability guard must filter them out before S1 selection, in
+    both default Auto Simulation and Draft-Day Accuracy Mode.
+    """
+
+    def test_60_pick_excludes_all_return_to_school_in_s1(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        _seed_full_test_fixture(db_session)
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026, "rounds": 2, "limit": 60,
+                "evaluate_trades": False,
+                "draft_day_accuracy_mode": True,
+            },
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        selected = _selected_names(body)
+        for name in _RETURN_TO_SCHOOL_NAMES:
+            assert name not in selected, (
+                f"Return-to-school / not-final-entrant player {name!r} "
+                f"was selected in Draft-Day Accuracy Mode"
+            )
+
+    def test_60_pick_excludes_all_return_to_school_in_default(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """Default Auto Simulation must also exclude return-to-school
+        players (the guard runs before any mode-specific selection)."""
+        _seed_full_test_fixture(db_session)
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026, "rounds": 2, "limit": 60,
+                "evaluate_trades": False,
+            },
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        selected = _selected_names(body)
+        for name in _RETURN_TO_SCHOOL_NAMES:
+            assert name not in selected, (
+                f"Return-to-school / not-final-entrant player {name!r} "
+                f"was selected in default Auto Simulation"
+            )
+
+    def test_60_pick_excludes_all_unavailable_in_s1(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """Combined check: neither withdrawn nor return-to-school players
+        may appear in the Draft-Day Accuracy Mode 60-pick board."""
+        _seed_full_test_fixture(db_session)
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026, "rounds": 2, "limit": 60,
+                "evaluate_trades": False,
+                "draft_day_accuracy_mode": True,
+            },
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        selected = _selected_names(body)
+        for name in _UNAVAILABLE_NAMES:
+            assert name not in selected, (
+                f"Unavailable player {name!r} was selected in "
+                f"Draft-Day Accuracy Mode"
+            )
+
+    def test_60_pick_excludes_all_unavailable_in_both_flags(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """When both flags are on (frontend default), the availability
+        guard must still exclude all unavailable players."""
+        _seed_full_test_fixture(db_session)
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026, "rounds": 2, "limit": 60,
+                "evaluate_trades": False,
+                "use_prediction_calibration": True,
+                "include_projection_diagnostics": True,
+                "draft_day_accuracy_mode": True,
+            },
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        selected = _selected_names(body)
+        for name in _UNAVAILABLE_NAMES:
+            assert name not in selected, (
+                f"Unavailable player {name!r} was selected in "
+                f"Both-Flags mode"
+            )
+
+
+# ---------------------------------------------------------------------------
 # 4. Safety anchors in range
 # ---------------------------------------------------------------------------
 
 
 class TestSafetyAnchors:
-    """Brayden / Yaxel / Cameron / Niko must stay within their ranges."""
+    """Brayden / Yaxel / Cameron must stay within their ranges.
+
+    M4-CL: Niko Bundalo's safety anchor [24,34] is CANCELLED because he is
+    now in the return-to-school / not-final-entrant unavailable set. The
+    former ``test_niko_bundalo_range_24_34`` is replaced by
+    ``test_niko_bundalo_not_selected`` below, which asserts he is NOT
+    selected at all.
+    """
 
     @pytest.fixture(autouse=True)
     def _setup_fixture(self, client: TestClient, db_session: Session):
@@ -375,10 +541,16 @@ class TestSafetyAnchors:
         assert pick is not None, "Cameron Carr not selected"
         assert 12 <= pick <= 17, f"Cameron Carr at #{pick}, expected [12,17]"
 
-    def test_niko_bundalo_range_24_34(self):
+    def test_niko_bundalo_not_selected(self):
+        """M4-CL: Niko Bundalo is now unavailable (return-to-school /
+        not-final-entrant). He must NOT be selected anywhere in the
+        60-pick board — his previous [24,34] safety anchor is cancelled.
+        """
         pick = _pick_of(self._body, "Niko Bundalo")
-        assert pick is not None, "Niko Bundalo not selected"
-        assert 24 <= pick <= 34, f"Niko Bundalo at #{pick}, expected [24,34]"
+        assert pick is None, (
+            f"Niko Bundalo was selected at #{pick} but is unavailable "
+            f"(return-to-school / not-final-entrant) per M4-CL"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -534,9 +706,9 @@ class TestAPIContract:
         body = response.json()
         assert body["mode"] == "draft_day_accuracy"
         assert len(body["picks"]) <= 30
-        # No withdrawn in 30-pick either.
+        # No withdrawn / return-to-school in 30-pick either.
         selected = _selected_names(body)
-        for name in _WITHDRAWN_NAMES:
+        for name in _UNAVAILABLE_NAMES:
             assert name not in selected
 
 
@@ -694,7 +866,7 @@ class TestS1NotSwallowedByCalibration:
         )
         assert response.status_code == 200
         selected = _selected_names(response.json())
-        for name in _WITHDRAWN_NAMES:
+        for name in _UNAVAILABLE_NAMES:
             assert name not in selected
 
     def test_s1_kingston_not_slipped_when_calibration_on(
@@ -790,7 +962,7 @@ class TestS1NotSwallowedByCalibration:
         body = response.json()
         assert body["mode"] == "auto_simulation"
         assert body["draft_day_accuracy_mode"] is False
-        # No withdrawn in default mode either.
+        # No withdrawn / return-to-school in default mode either.
         selected = _selected_names(body)
-        for name in _WITHDRAWN_NAMES:
+        for name in _UNAVAILABLE_NAMES:
             assert name not in selected

@@ -191,8 +191,16 @@ def test_recommend_can_recommend_high_upside_dropper_in_available_board(
 
 def test_recommend_does_not_change_simulate(client: TestClient) -> None:
     """Smoke test: the recommend path change must not affect
-    /api/simulate.  A simple 2-pick simulation should still
-    return picks for SAS (pick=2) and HOU (pick=5).
+    /api/simulate.  A simple 1-pick simulation should still
+    return a pick for SAS (pick=2).
+
+    M4-CL: Previously asserted 2 picks (SAS #2 + HOU #5), but
+    Braylon Mullins is now in the return-to-school unavailable
+    set, leaving only 1 available prospect in the conftest seed.
+    /api/simulate respects the availability guard, so it can
+    only fill 1 of the 2 draft slots.  The test now asserts 1
+    pick — the smoke intent (recommend path doesn't break
+    simulate) is preserved.
     """
     response = client.post(
         "/api/simulate",
@@ -200,11 +208,9 @@ def test_recommend_does_not_change_simulate(client: TestClient) -> None:
     )
     assert response.status_code == 200
     body = response.json()
-    assert len(body["picks"]) == 2
+    assert len(body["picks"]) == 1
     assert body["picks"][0]["team"]["abbr"] == "SAS"
     assert body["picks"][0]["pick"] == 2
-    assert body["picks"][1]["team"]["abbr"] == "HOU"
-    assert body["picks"][1]["pick"] == 5
     # selected_player is still deterministic — must come from
     # rank_prospects on the live available board, not from
     # news / market context (Phase 5B-M1 invariant).

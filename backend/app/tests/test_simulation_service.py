@@ -471,6 +471,9 @@ class TestTeamNeedStateEndToEnd:
         # the DB; we'll cap with limit=2 so the simulator only looks at
         # the first two draft-order rows ordered by pick_no.
         _ensure_sas_has_two_picks(db_session, pick_nos=(1, 2))
+        # M4-CL: Braylon Mullins is now unavailable; add a replacement
+        # available prospect so the simulator has 2 selectable players.
+        _add_available_replacement_prospect(db_session)
         # Re-attach an explicit TeamNeed so we know the starting state.
         spurs_team = db_session.query(__import__("app.models.team", fromlist=["Team"]).Team).filter(
             __import__("app.models.team", fromlist=["Team"]).Team.abbr == "SAS"
@@ -601,6 +604,46 @@ def _add_prospect(
     return p
 
 
+def _add_available_replacement_prospect(
+    db: Session,
+    *,
+    name: str = "Darryn Peterson",
+) -> Prospect:
+    """Add an available prospect to replace the unavailable Braylon Mullins.
+
+    M4-CL: Braylon Mullins is now unavailable (return-to-school). This helper
+    adds a replacement prospect with attributes matching the conftest-seeded
+    Braylon Mullins, so tests that need a second available prospect (besides
+    Mikel Brown Jr.) can still work without changing test logic.
+
+    The replacement uses the name of an available seed_demo_data player
+    (Darryn Peterson) but with Braylon Mullins's conftest attributes, so the
+    ranking behavior and test expectations remain unchanged.
+    """
+    p = Prospect(
+        year=2026,
+        name=name,
+        position="SG",
+        age=18.9,
+        height="6-5",
+        weight=190,
+        school_or_league="UConn",
+        ppg=14.8,
+        rpg=4.0,
+        apg=2.7,
+        fg_pct=45.9,
+        three_pct=40.1,
+        ft_pct=81.0,
+        stocks=1.3,
+        archetype="Movement shooter",
+        upside_score=82,
+        risk_score=24,
+    )
+    db.add(p)
+    db.flush()
+    return p
+
+
 class TestLockedPicks:
     # ----- 1. locked pick overrides auto recommendation -----
     def test_locked_pick_overrides_auto_pick(
@@ -611,6 +654,10 @@ class TestLockedPicks:
         must surface Mikel as the selected player and put the natural
         top-1 in the alternatives list."""
         mikel_id = _get_prospect_id_by_name(db_session, "Mikel Brown Jr.")
+        # M4-CL: Braylon Mullins is now unavailable; add a replacement
+        # available prospect so pick #1 auto-selects someone else,
+        # leaving Mikel for the locked pick #2.
+        _add_available_replacement_prospect(db_session)
         db_session.commit()
 
         # Conftest seeds 2 prospects and 4 DraftOrder rows (2,5,10,20).
@@ -2035,6 +2082,9 @@ class TestDiagnosticsWarnings:
             db_session,
             name="Late Market Slip Guard",
         )
+        # M4-CL: Braylon Mullins unavailable; add replacement so auto
+        # picks #2 and #5 have enough available prospects.
+        _add_available_replacement_prospect(db_session)
         db_session.add(
             ProspectDraftProjection(
                 prospect_id=prospect.id,
@@ -2068,6 +2118,9 @@ class TestDiagnosticsWarnings:
             stats_source="nba_importer_heuristic",
             stats_confidence=0.30,
         )
+        # M4-CL: Braylon Mullins unavailable; add replacement so auto
+        # picks #2 and #5 have enough available prospects.
+        _add_available_replacement_prospect(db_session)
 
         pick = self._simulate_locked_pick_10(client, prospect)
 
@@ -2085,6 +2138,9 @@ class TestDiagnosticsWarnings:
             db_session,
             name="Missing Market Top Thirty",
         )
+        # M4-CL: Braylon Mullins unavailable; add replacement so the
+        # simulation has enough available prospects for 2 picks.
+        _add_available_replacement_prospect(db_session)
         db_session.add(
             ProspectDraftProjection(
                 prospect_id=prospect.id,
@@ -2131,6 +2187,10 @@ class TestDiagnosticsWarnings:
             name="Active Market Top Thirty",
             upside_score=9.0,
         )
+        # M4-CL: Braylon Mullins unavailable; add replacement so the
+        # simulation has enough available prospects for 2 picks,
+        # keeping Active Market Top Thirty unselected (missing).
+        _add_available_replacement_prospect(db_session)
         db_session.add_all([
             ProspectDraftProjection(
                 prospect_id=withdrawn.id,
@@ -2185,6 +2245,9 @@ class TestDiagnosticsWarnings:
             stats_source="nba_importer_heuristic",
             stats_confidence=0.30,
         )
+        # M4-CL: Braylon Mullins unavailable; add replacement so auto
+        # picks #2 and #5 have enough available prospects.
+        _add_available_replacement_prospect(db_session)
 
         with patch(
             "app.services.simulation_service._diagnostic_warnings",
@@ -2439,7 +2502,8 @@ class TestProjectionDiagnostics:
     ) -> None:
         team = _team_by_abbr(db_session, "SAS")
         selected_prospect = _prospect_by_name(db_session, "Mikel Brown Jr.")
-        other_prospect = _prospect_by_name(db_session, "Braylon Mullins")
+        # M4-CL: Braylon Mullins unavailable; use available replacement.
+        other_prospect = _add_available_replacement_prospect(db_session)
         db_session.add(
             TeamPickProjection(
                 year=2026,
@@ -2449,14 +2513,14 @@ class TestProjectionDiagnostics:
                 projection_type="team_report",
                 source="manual_projection",
                 confidence=0.77,
-                notes="Only Braylon should receive this team signal.",
+                notes="Only replacement should receive this team signal.",
             )
         )
         db_session.commit()
 
         pick = _base_projection_response(client, include=True)
         selected = pick["selected_player"]
-        braylon = next(
+        other_candidate = next(
             candidate
             for candidate in pick["candidate_board"]
             if candidate["prospect"]["id"] == other_prospect.id
@@ -2464,10 +2528,10 @@ class TestProjectionDiagnostics:
 
         assert selected["prospect"]["id"] == selected_prospect.id
         assert selected["team_projection_type"] is None
-        assert braylon["team_projection_type"] == "team_report"
-        assert braylon["team_projection_confidence"] == 0.77
-        assert braylon["team_projection_notes"] == (
-            "Only Braylon should receive this team signal."
+        assert other_candidate["team_projection_type"] == "team_report"
+        assert other_candidate["team_projection_confidence"] == 0.77
+        assert other_candidate["team_projection_notes"] == (
+            "Only replacement should receive this team signal."
         )
 
     def test_team_projection_type_priority_beats_confidence(
@@ -2524,10 +2588,11 @@ class TestProjectionDiagnostics:
         client: TestClient,
         db_session: Session,
     ) -> None:
-        braylon = _prospect_by_name(db_session, "Braylon Mullins")
+        # M4-CL: Braylon Mullins unavailable; use available replacement.
+        replacement = _add_available_replacement_prospect(db_session)
         db_session.add(
             ProspectDraftProjection(
-                prospect_id=braylon.id,
+                prospect_id=replacement.id,
                 year=2026,
                 expected_pick=18,
                 draft_range_min=15,
@@ -2547,14 +2612,14 @@ class TestProjectionDiagnostics:
                 "rounds": 1,
                 "limit": 1,
                 "include_projection_diagnostics": True,
-                "locked_picks": [{"pick_no": 2, "prospect_id": braylon.id}],
+                "locked_picks": [{"pick_no": 2, "prospect_id": replacement.id}],
             },
         )
 
         assert response.status_code == 200
         pick = response.json()["picks"][0]
         selected = pick["selected_player"]
-        assert selected["prospect"]["name"] == "Braylon Mullins"
+        assert selected["prospect"]["name"] == "Darryn Peterson"
         assert selected["projection_expected_pick"] == 18
         assert "locked by user override" in "\n".join(pick["decision_log"]).lower()
 
@@ -2667,7 +2732,8 @@ class TestPredictionCalibrationShadow:
     ) -> None:
         team = _team_by_abbr(db_session, "SAS")
         selected_prospect = _prospect_by_name(db_session, "Mikel Brown Jr.")
-        other_prospect = _prospect_by_name(db_session, "Braylon Mullins")
+        # M4-CL: Braylon Mullins unavailable; use available replacement.
+        other_prospect = _add_available_replacement_prospect(db_session)
         db_session.add_all(
             [
                 ProspectDraftProjection(
@@ -2700,7 +2766,7 @@ class TestPredictionCalibrationShadow:
                     projection_type="manual_prediction",
                     source="manual_projection",
                     confidence=0.9,
-                    notes="Team likes Braylon at this pick.",
+                    notes="Team likes replacement at this pick.",
                 ),
             ]
         )
@@ -2708,7 +2774,7 @@ class TestPredictionCalibrationShadow:
 
         pick = _base_projection_response(client, shadow=True)
         selected = pick["selected_player"]
-        braylon = next(
+        other_candidate = next(
             candidate
             for candidate in pick["candidate_board"]
             if candidate["prospect"]["id"] == other_prospect.id
@@ -2716,18 +2782,22 @@ class TestPredictionCalibrationShadow:
 
         assert selected["team_projection_type"] is None
         assert selected["prediction_team_projection_score"] == 0.0
-        assert braylon["team_projection_type"] == "manual_prediction"
-        assert braylon["prediction_team_projection_score"] > 0
+        assert other_candidate["team_projection_type"] == "manual_prediction"
+        assert other_candidate["prediction_team_projection_score"] > 0
 
     def test_shadow_rank_and_delta_do_not_reorder_candidate_board(
         self,
         client: TestClient,
         db_session: Session,
     ) -> None:
-        baseline = _base_projection_response(client)
         team = _team_by_abbr(db_session, "SAS")
         selected_prospect = _prospect_by_name(db_session, "Mikel Brown Jr.")
-        other_prospect = _prospect_by_name(db_session, "Braylon Mullins")
+        # M4-CL: Braylon Mullins unavailable; use available replacement.
+        # Add the replacement BEFORE capturing the baseline so both
+        # responses see the same candidate set.
+        other_prospect = _add_available_replacement_prospect(db_session)
+        db_session.commit()
+        baseline = _base_projection_response(client)
         db_session.add_all(
             [
                 ProspectDraftProjection(
@@ -2773,23 +2843,24 @@ class TestPredictionCalibrationShadow:
         ] == [
             candidate["prospect"]["name"] for candidate in baseline["candidate_board"]
         ]
-        braylon = next(
+        other_candidate = next(
             candidate
             for candidate in with_shadow["candidate_board"]
             if candidate["prospect"]["id"] == other_prospect.id
         )
-        assert braylon["prediction_shadow_rank"] == 1
-        assert braylon["prediction_shadow_delta"] > 0
+        assert other_candidate["prediction_shadow_rank"] == 1
+        assert other_candidate["prediction_shadow_delta"] > 0
 
     def test_locked_pick_keeps_override_with_prediction_shadow(
         self,
         client: TestClient,
         db_session: Session,
     ) -> None:
-        braylon = _prospect_by_name(db_session, "Braylon Mullins")
+        # M4-CL: Braylon Mullins unavailable; use available replacement.
+        replacement = _add_available_replacement_prospect(db_session)
         db_session.add(
             ProspectDraftProjection(
-                prospect_id=braylon.id,
+                prospect_id=replacement.id,
                 year=2026,
                 expected_pick=2,
                 draft_range_min=1,
@@ -2809,14 +2880,14 @@ class TestPredictionCalibrationShadow:
                 "rounds": 1,
                 "limit": 1,
                 "include_prediction_shadow": True,
-                "locked_picks": [{"pick_no": 2, "prospect_id": braylon.id}],
+                "locked_picks": [{"pick_no": 2, "prospect_id": replacement.id}],
             },
         )
 
         assert response.status_code == 200
         pick = response.json()["picks"][0]
         selected = pick["selected_player"]
-        assert selected["prospect"]["name"] == "Braylon Mullins"
+        assert selected["prospect"]["name"] == "Darryn Peterson"
         assert selected["prediction_shadow_score"] is not None
         assert "locked by user override" in "\n".join(pick["decision_log"]).lower()
 
@@ -2936,7 +3007,8 @@ class TestPredictionCalibrationShadow:
 class TestPredictionCalibratedSelection:
     def _add_braylon_manual_signal(self, db_session: Session) -> Prospect:
         team = _team_by_abbr(db_session, "SAS")
-        braylon = _prospect_by_name(db_session, "Braylon Mullins")
+        # M4-CL: Braylon Mullins unavailable; use available replacement.
+        braylon = _add_available_replacement_prospect(db_session)
         db_session.add_all(
             [
                 ProspectDraftProjection(
@@ -2948,7 +3020,7 @@ class TestPredictionCalibratedSelection:
                     tier=1,
                     source="manual_projection",
                     confidence=0.95,
-                    notes="Manual projection says Braylon belongs in the top tier.",
+                    notes="Manual projection says replacement belongs in the top tier.",
                 ),
                 TeamPickProjection(
                     year=2026,
@@ -2958,7 +3030,7 @@ class TestPredictionCalibratedSelection:
                     projection_type="manual_prediction",
                     source="manual_projection",
                     confidence=0.95,
-                    notes="Manual team-pick projection for Braylon.",
+                    notes="Manual team-pick projection for replacement.",
                 ),
             ]
         )
@@ -2995,7 +3067,7 @@ class TestPredictionCalibratedSelection:
 
         assert baseline["selected_player"]["prospect"]["name"] == "Mikel Brown Jr."
         assert selected["prospect"]["id"] == braylon.id
-        assert selected["prospect"]["name"] == "Braylon Mullins"
+        assert selected["prospect"]["name"] == "Darryn Peterson"
         assert selected["scores"]["final_score"] != selected["prediction_sort_score"]
         assert selected["prediction_selection_rank"] == 1
         assert selected["prediction_selection_applied"] is True
@@ -3022,7 +3094,7 @@ class TestPredictionCalibratedSelection:
         )
         selected = pick["selected_player"]
 
-        assert selected["prospect"]["name"] == "Braylon Mullins"
+        assert selected["prospect"]["name"] == "Darryn Peterson"
         assert selected["prediction_sort_score"] is not None
         assert selected["prediction_shadow_score"] is None
 
@@ -3040,7 +3112,7 @@ class TestPredictionCalibratedSelection:
         )
         selected = pick["selected_player"]
 
-        assert selected["prospect"]["name"] == "Braylon Mullins"
+        assert selected["prospect"]["name"] == "Darryn Peterson"
         assert selected["prediction_sort_score"] is not None
         assert selected["prediction_shadow_score"] is not None
         assert selected["projection_expected_pick"] == 2
@@ -3316,6 +3388,9 @@ class TestMarketPriorAvailabilityGuardrail:
         pull that player back onto the board."""
         mikel = _prospect_by_name(db_session, "Mikel Brown Jr.")
         rockets = _team_by_abbr(db_session, "HOU")
+        # M4-CL: Braylon Mullins unavailable; add replacement so pick #5
+        # has an available prospect to select (Mikel is taken at #2).
+        _add_available_replacement_prospect(db_session)
         db_session.add_all(
             [
                 ProspectDraftProjection(
@@ -3696,11 +3771,16 @@ class TestWithdrawalGuardSimulation:
 # break the prediction-assisted selection behaviour for key non-withdrawn
 # prospects.  Because Brayden Burries, Yaxel Lendeborg, and Cameron Carr
 # are not part of seed_demo_data, we seed them explicitly with projections
-# matching their expected draft ranges.  Niko Bundalo is already in
-# seed_demo_data; we overlay his projection with the Class-A range [24,34].
+# matching their expected draft ranges.  M4-CL: Niko Bundalo is now in the
+# return-to-school / not-final-entrant unavailable set; his safety anchor
+# is cancelled and replaced by test_niko_bundalo_not_selected.
 # ---------------------------------------------------------------------------
 
 
+# M4-CL: Niko Bundalo removed from safety anchors — he is now in the
+# return-to-school / not-final-entrant unavailable set, so he can no
+# longer be a safety anchor. His [24,34] anchor is cancelled; see
+# test_niko_bundalo_not_selected below.
 _SAFETY_ANCHOR_SPECS: tuple[tuple[str, str, float, int, int, int], ...] = (
     # (name, position, upside_score, expected_pick, range_min, range_max)
     # upside_score is tuned so that with seed_demo_data + 60 generic
@@ -3709,15 +3789,14 @@ _SAFETY_ANCHOR_SPECS: tuple[tuple[str, str, float, int, int, int], ...] = (
     ("Brayden Burries", "SG", 84.0, 10, 8, 13),
     ("Yaxel Lendeborg", "PF", 82.0, 12, 11, 14),
     ("Cameron Carr", "PG", 75.0, 14, 12, 17),
-    ("Niko Bundalo", "PF", 73.0, 28, 24, 34),
 )
 
 
 def _seed_safety_anchor_prospects(db: Session) -> dict[str, Prospect]:
-    """Seed the 4 safety-anchor prospects with their draft projections.
+    """Seed the 3 safety-anchor prospects with their draft projections.
 
-    For Niko Bundalo (already in seed_demo_data) we overlay the Class-A
-    projection range [24,34].  The other three are added fresh.
+    M4-CL: Niko Bundalo removed — he is now unavailable. The remaining
+    three (Brayden Burries, Yaxel Lendeborg, Cameron Carr) are added fresh.
     """
     prospects_by_name: dict[str, Prospect] = {}
     for name, position, upside, expected, rmin, rmax in _SAFETY_ANCHOR_SPECS:
@@ -3788,9 +3867,11 @@ def _seed_safety_anchor_prospects(db: Session) -> dict[str, Prospect]:
 class TestSafetyAnchorPredictionAssisted:
     """M4-CC: Availability guard must not break prediction-assisted ranges.
 
-    These tests verify that after filtering the 8 officially withdrawn
-    prospects, the prediction-assisted simulation still selects the key
-    non-withdrawn prospects within their expected draft ranges.
+    These tests verify that after filtering the officially withdrawn and
+    return-to-school prospects, the prediction-assisted simulation still
+    selects the key non-withdrawn prospects within their expected draft
+    ranges.  M4-CL: Niko Bundalo is now unavailable; his anchor is
+    cancelled and replaced by test_niko_bundalo_not_selected.
     """
 
     @staticmethod
@@ -3818,7 +3899,7 @@ class TestSafetyAnchorPredictionAssisted:
     def test_safety_anchors_within_expected_ranges(
         self, client: TestClient, db_session: Session,
     ) -> None:
-        """All 4 safety-anchor prospects must be selected within range."""
+        """All 3 safety-anchor prospects must be selected within range."""
         _clear_2026_draft_order(db_session)
         seed_db.seed_demo_data(db_session)
         _seed_prospects(db_session, count=60)
@@ -3893,10 +3974,13 @@ class TestSafetyAnchorPredictionAssisted:
             f"Cameron Carr at pick {pick_no}, expected [12,17]"
         )
 
-    def test_niko_bundalo_range_24_34(
+    def test_niko_bundalo_not_selected(
         self, client: TestClient, db_session: Session,
     ) -> None:
-        """Niko Bundalo must be selected in [24,34]."""
+        """M4-CL: Niko Bundalo is now unavailable (return-to-school /
+        not-final-entrant). He must NOT be selected anywhere in the
+        60-pick board — his previous [24,34] safety anchor is cancelled.
+        """
         _clear_2026_draft_order(db_session)
         seed_db.seed_demo_data(db_session)
         _seed_prospects(db_session, count=60)
@@ -3906,7 +3990,7 @@ class TestSafetyAnchorPredictionAssisted:
 
         body = self._run_60_pick_calibration(client)
         pick_no = self._pick_of(body, "Niko Bundalo")
-        assert pick_no is not None, "Niko Bundalo was not selected"
-        assert 24 <= pick_no <= 34, (
-            f"Niko Bundalo at pick {pick_no}, expected [24,34]"
+        assert pick_no is None, (
+            f"Niko Bundalo was selected at #{pick_no} but is unavailable "
+            f"(return-to-school / not-final-entrant) per M4-CL"
         )
