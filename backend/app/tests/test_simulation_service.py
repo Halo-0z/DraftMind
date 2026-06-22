@@ -2780,10 +2780,25 @@ class TestPredictionCalibrationShadow:
         assert baseline_pick["pick"] == 2
         assert baseline_pick["team"]["abbr"] == "DET"
         assert baseline_pick["selected_player"]["prospect"]["name"] == "Darryn Peterson"
-        assert all(
-            candidate["prospect"]["name"] != "Cameron Boozer"
-            for candidate in baseline_pick["candidate_board"]
+        # M4-CC note: the withdrawal guard removes Tounde Yessoufou, Isiah
+        # Harwell, and Malachi Moreno from the demo-data candidate pool, which
+        # can shift Cameron Boozer into the ranking top-5. The core premise
+        # of this test is that prediction_shadow EXPOSES shadow-specific
+        # diagnostics (candidate_source, shadow_rank, shadow_score) that the
+        # baseline does not provide. So we assert that in the baseline
+        # Cameron Boozer either is absent OR appears without shadow attributes.
+        baseline_cameron = next(
+            (
+                candidate
+                for candidate in baseline_pick["candidate_board"]
+                if candidate["prospect"]["name"] == "Cameron Boozer"
+            ),
+            None,
         )
+        if baseline_cameron is not None:
+            assert baseline_cameron.get("candidate_source") in {None, "ranking_top"}
+            assert baseline_cameron.get("prediction_shadow_rank") is None
+            assert baseline_cameron.get("prediction_shadow_score") is None
 
         shadow_response = client.post(
             "/api/simulate",
@@ -2811,11 +2826,16 @@ class TestPredictionCalibrationShadow:
         assert cameron["team_projection_type"] == "consensus_mock"
         assert cameron["prediction_shadow_rank"] == 2
         assert cameron["prediction_shadow_score"] is not None
+        # M4-CC note: with the withdrawal guard active, Cameron Boozer may
+        # now sit inside the ranking top-5 (candidate_source="ranking_top")
+        # instead of being surfaced purely via the shadow watchlist. Either
+        # way, the shadow diagnostics above must be populated.
         assert cameron["candidate_source"] in {
             "prediction_shadow_top",
             "team_projection_match",
+            "ranking_top",
         }
-        assert len(shadow_pick["candidate_board"]) > len(baseline_pick["candidate_board"])
+        assert len(shadow_pick["candidate_board"]) >= len(baseline_pick["candidate_board"])
 
     def test_prediction_shadow_candidate_visibility_does_not_change_selected_or_scores(
         self,
@@ -3430,3 +3450,405 @@ class TestMarketPriorAvailabilityGuardrail:
             if candidate["prospect"]["name"] == "Vetoed Reach Prospect":
                 for note in candidate.get("prediction_selection_notes") or []:
                     assert "availability protection" not in note.lower()
+
+
+# ---------------------------------------------------------------------------
+# M4-CC: Official withdrawal / availability guard integration tests
+# ---------------------------------------------------------------------------
+
+
+_WITHDRAWN_NAMES_2026: tuple[str, ...] = (
+    "Tounde Yessoufou",
+    "Isiah Harwell",
+    "Malachi Moreno",
+    "Bassala Bagayoko",
+    "Marc-Owen Fodzo Dada",
+    "Pavle Backo",
+    "Francesco Ferrari",
+    "Luigi Suigo",
+)
+
+
+def _seed_withdrawn_prospects(db: Session, year: int = 2026) -> None:
+    """Seed the 8 officially withdrawn prospects with very high upside_score.
+
+    Without the M4-CC availability guard these prospects would be selected
+    early (high upside_score => top of the candidate board). The guard must
+    filter them out before ranking.
+    """
+    positions = ["PG", "SG", "SF", "PF", "C", "PG", "SG", "SF"]
+    for i, name in enumerate(_WITHDRAWN_NAMES_2026):
+        db.add(
+            Prospect(
+                year=year,
+                name=name,
+                position=positions[i % len(positions)],
+                age=19.0,
+                height="6-6",
+                weight=200,
+                school_or_league="Mock",
+                ppg=18.0,
+                rpg=5.0,
+                apg=4.0,
+                fg_pct=46.0,
+                three_pct=38.0,
+                ft_pct=80.0,
+                stocks=1.5,
+                archetype="Versatile wing",
+                # Very high upside so they would dominate without the guard.
+                upside_score=95.0 - i * 0.5,
+                risk_score=15.0,
+            )
+        )
+    db.flush()
+
+
+class TestWithdrawalGuardSimulation:
+    """M4-CC: Auto Simulation must not select officially withdrawn prospects."""
+
+    def test_30_pick_excludes_withdrawn_players(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """30-pick simulation must not select Tounde Yessoufou or Isiah Harwell."""
+        _seed_extra_draft_order(db_session, count=60)
+        _seed_prospects(db_session, count=60)
+        _seed_withdrawn_prospects(db_session)
+        db_session.commit()
+
+        response = client.post(
+            "/api/simulate",
+            json={"year": 2026, "rounds": 1, "limit": 30, "evaluate_trades": False},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        selected_names = {
+            pick["selected_player"]["prospect"]["name"]
+            for pick in body["picks"]
+        }
+        # The two highest-upside withdrawn prospects would have been selected
+        # in the first round without the guard.
+        assert "Tounde Yessoufou" not in selected_names
+        assert "Isiah Harwell" not in selected_names
+
+    def test_60_pick_excludes_all_withdrawn_players(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """60-pick simulation must not select any of the 8 withdrawn players."""
+        _seed_extra_draft_order(db_session, count=60)
+        _seed_prospects(db_session, count=60)
+        _seed_withdrawn_prospects(db_session)
+        db_session.commit()
+
+        response = client.post(
+            "/api/simulate",
+            json={"year": 2026, "rounds": 2, "limit": 60, "evaluate_trades": False},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        selected_names = {
+            pick["selected_player"]["prospect"]["name"]
+            for pick in body["picks"]
+        }
+        for withdrawn_name in _WITHDRAWN_NAMES_2026:
+            assert withdrawn_name not in selected_names, (
+                f"{withdrawn_name!r} should have been filtered by the "
+                f"availability guard but was selected"
+            )
+
+    def test_withdrawn_prospects_absent_from_candidate_board(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """Withdrawn prospects must not appear even in candidate_board."""
+        _seed_extra_draft_order(db_session, count=60)
+        _seed_prospects(db_session, count=60)
+        _seed_withdrawn_prospects(db_session)
+        db_session.commit()
+
+        response = client.post(
+            "/api/simulate",
+            json={"year": 2026, "rounds": 1, "limit": 5, "evaluate_trades": False},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        for pick in body["picks"]:
+            board_names = {
+                c["prospect"]["name"] for c in pick.get("candidate_board", [])
+            }
+            for withdrawn_name in _WITHDRAWN_NAMES_2026:
+                assert withdrawn_name not in board_names, (
+                    f"{withdrawn_name!r} appeared in candidate_board at "
+                    f"pick {pick['pick']}"
+                )
+
+    def test_withdrawn_guard_does_not_affect_other_years(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """A prospect named 'Tounde Yessoufou' in year 2025 must NOT be filtered.
+
+        The guard is scoped to draft_year == 2026 only.
+        """
+        # Seed a 2025 draft with a prospect sharing the withdrawn name.
+        spurs = db_session.query(Team).filter(Team.abbr == "SAS").first()
+        db_session.add(DraftOrder(year=2025, pick_no=1, team_id=spurs.id))
+        db_session.add(
+            Prospect(
+                year=2025,
+                name="Tounde Yessoufou",
+                position="SG",
+                age=19.0,
+                height="6-6",
+                weight=200,
+                school_or_league="Mock 2025",
+                ppg=18.0,
+                rpg=5.0,
+                apg=4.0,
+                fg_pct=46.0,
+                three_pct=38.0,
+                ft_pct=80.0,
+                stocks=1.5,
+                archetype="Versatile wing",
+                upside_score=90.0,
+                risk_score=15.0,
+            )
+        )
+        db_session.commit()
+
+        response = client.post(
+            "/api/simulate",
+            json={"year": 2025, "rounds": 1, "limit": 1, "evaluate_trades": False},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        # The 2025 prospect should be selectable (guard is year-scoped).
+        assert body["picks"][0]["selected_player"]["prospect"]["name"] == "Tounde Yessoufou"
+
+
+# ---------------------------------------------------------------------------
+# M4-CC: Safety anchor tests for prediction-assisted mode
+# ---------------------------------------------------------------------------
+#
+# Accepted risk note (M4-CB):
+#   risky_change = 1 accepted.
+#   The risky is the #8 ATL calibration OFF (Darius Acuff Jr.) vs ON
+#   (Nate Ament) range-hit comparator artifact.  Final ON #8 in S0 and
+#   after the availability filter is still Nate Ament.  This is NOT the
+#   Final ON board being broken by the availability guard.
+#
+# These safety anchor tests verify that the availability guard does not
+# break the prediction-assisted selection behaviour for key non-withdrawn
+# prospects.  Because Brayden Burries, Yaxel Lendeborg, and Cameron Carr
+# are not part of seed_demo_data, we seed them explicitly with projections
+# matching their expected draft ranges.  Niko Bundalo is already in
+# seed_demo_data; we overlay his projection with the Class-A range [24,34].
+# ---------------------------------------------------------------------------
+
+
+_SAFETY_ANCHOR_SPECS: tuple[tuple[str, str, float, int, int, int], ...] = (
+    # (name, position, upside_score, expected_pick, range_min, range_max)
+    # upside_score is tuned so that with seed_demo_data + 60 generic
+    # prospects, the prediction-assisted calibration places each player
+    # within the Final Accuracy Board expected range.
+    ("Brayden Burries", "SG", 84.0, 10, 8, 13),
+    ("Yaxel Lendeborg", "PF", 82.0, 12, 11, 14),
+    ("Cameron Carr", "PG", 75.0, 14, 12, 17),
+    ("Niko Bundalo", "PF", 73.0, 28, 24, 34),
+)
+
+
+def _seed_safety_anchor_prospects(db: Session) -> dict[str, Prospect]:
+    """Seed the 4 safety-anchor prospects with their draft projections.
+
+    For Niko Bundalo (already in seed_demo_data) we overlay the Class-A
+    projection range [24,34].  The other three are added fresh.
+    """
+    prospects_by_name: dict[str, Prospect] = {}
+    for name, position, upside, expected, rmin, rmax in _SAFETY_ANCHOR_SPECS:
+        existing = (
+            db.query(Prospect)
+            .filter(Prospect.year == 2026, Prospect.name == name)
+            .first()
+        )
+        if existing is None:
+            prospect = Prospect(
+                year=2026,
+                name=name,
+                position=position,
+                age=19.0,
+                height="6-6",
+                weight=200,
+                school_or_league="Safety Anchor U",
+                ppg=15.0,
+                rpg=5.0,
+                apg=3.5,
+                fg_pct=46.0,
+                three_pct=36.0,
+                ft_pct=78.0,
+                stocks=1.5,
+                archetype="Versatile",
+                upside_score=upside,
+                risk_score=20.0,
+            )
+            db.add(prospect)
+            db.flush()
+        else:
+            prospect = existing
+        prospects_by_name[name] = prospect
+
+        # Overlay / create the draft projection with the safety-anchor range.
+        proj = (
+            db.query(ProspectDraftProjection)
+            .filter_by(
+                prospect_id=prospect.id,
+                year=2026,
+                source="manual_projection",
+            )
+            .first()
+        )
+        payload = {
+            "prospect_id": prospect.id,
+            "year": 2026,
+            "consensus_rank": expected,
+            "big_board_rank": expected,
+            "expected_pick": expected,
+            "draft_range_min": rmin,
+            "draft_range_max": rmax,
+            "tier": 3 if expected <= 14 else 5,
+            "source": "manual_projection",
+            "source_count": 1,
+            "confidence": 0.65,
+            "notes": "M4-CC safety anchor projection",
+        }
+        if proj is None:
+            db.add(ProspectDraftProjection(**payload))
+        else:
+            for k, v in payload.items():
+                setattr(proj, k, v)
+    db.flush()
+    return prospects_by_name
+
+
+class TestSafetyAnchorPredictionAssisted:
+    """M4-CC: Availability guard must not break prediction-assisted ranges.
+
+    These tests verify that after filtering the 8 officially withdrawn
+    prospects, the prediction-assisted simulation still selects the key
+    non-withdrawn prospects within their expected draft ranges.
+    """
+
+    @staticmethod
+    def _run_60_pick_calibration(client: TestClient) -> dict:
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 2,
+                "limit": 60,
+                "evaluate_trades": False,
+                "use_prediction_calibration": True,
+            },
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    @staticmethod
+    def _pick_of(body: dict, name: str) -> int | None:
+        for pick in body["picks"]:
+            if pick["selected_player"]["prospect"]["name"] == name:
+                return pick["pick"]
+        return None
+
+    def test_safety_anchors_within_expected_ranges(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """All 4 safety-anchor prospects must be selected within range."""
+        _clear_2026_draft_order(db_session)
+        seed_db.seed_demo_data(db_session)
+        _seed_prospects(db_session, count=60)
+        _seed_safety_anchor_prospects(db_session)
+        _seed_extra_draft_order(db_session, start=21, count=40)
+        db_session.commit()
+
+        body = self._run_60_pick_calibration(client)
+
+        for name, _pos, _upside, _expected, rmin, rmax in _SAFETY_ANCHOR_SPECS:
+            pick_no = self._pick_of(body, name)
+            assert pick_no is not None, (
+                f"{name!r} was not selected in the 60-pick simulation; "
+                f"the availability guard may have over-filtered"
+            )
+            assert rmin <= pick_no <= rmax, (
+                f"{name!r} selected at pick {pick_no} but expected "
+                f"range [{rmin},{rmax}]"
+            )
+
+    def test_bradyen_burries_range_8_13(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """Brayden Burries must be selected in [8,13]."""
+        _clear_2026_draft_order(db_session)
+        seed_db.seed_demo_data(db_session)
+        _seed_prospects(db_session, count=60)
+        _seed_safety_anchor_prospects(db_session)
+        _seed_extra_draft_order(db_session, start=21, count=40)
+        db_session.commit()
+
+        body = self._run_60_pick_calibration(client)
+        pick_no = self._pick_of(body, "Brayden Burries")
+        assert pick_no is not None, "Brayden Burries was not selected"
+        assert 8 <= pick_no <= 13, (
+            f"Brayden Burries at pick {pick_no}, expected [8,13]"
+        )
+
+    def test_yaxel_lendeborg_range_11_14(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """Yaxel Lendeborg must be selected in [11,14]."""
+        _clear_2026_draft_order(db_session)
+        seed_db.seed_demo_data(db_session)
+        _seed_prospects(db_session, count=60)
+        _seed_safety_anchor_prospects(db_session)
+        _seed_extra_draft_order(db_session, start=21, count=40)
+        db_session.commit()
+
+        body = self._run_60_pick_calibration(client)
+        pick_no = self._pick_of(body, "Yaxel Lendeborg")
+        assert pick_no is not None, "Yaxel Lendeborg was not selected"
+        assert 11 <= pick_no <= 14, (
+            f"Yaxel Lendeborg at pick {pick_no}, expected [11,14]"
+        )
+
+    def test_cameron_carr_range_12_17(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """Cameron Carr must be selected in [12,17]."""
+        _clear_2026_draft_order(db_session)
+        seed_db.seed_demo_data(db_session)
+        _seed_prospects(db_session, count=60)
+        _seed_safety_anchor_prospects(db_session)
+        _seed_extra_draft_order(db_session, start=21, count=40)
+        db_session.commit()
+
+        body = self._run_60_pick_calibration(client)
+        pick_no = self._pick_of(body, "Cameron Carr")
+        assert pick_no is not None, "Cameron Carr was not selected"
+        assert 12 <= pick_no <= 17, (
+            f"Cameron Carr at pick {pick_no}, expected [12,17]"
+        )
+
+    def test_niko_bundalo_range_24_34(
+        self, client: TestClient, db_session: Session,
+    ) -> None:
+        """Niko Bundalo must be selected in [24,34]."""
+        _clear_2026_draft_order(db_session)
+        seed_db.seed_demo_data(db_session)
+        _seed_prospects(db_session, count=60)
+        _seed_safety_anchor_prospects(db_session)
+        _seed_extra_draft_order(db_session, start=21, count=40)
+        db_session.commit()
+
+        body = self._run_60_pick_calibration(client)
+        pick_no = self._pick_of(body, "Niko Bundalo")
+        assert pick_no is not None, "Niko Bundalo was not selected"
+        assert 24 <= pick_no <= 34, (
+            f"Niko Bundalo at pick {pick_no}, expected [24,34]"
+        )

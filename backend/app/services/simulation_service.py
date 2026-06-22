@@ -27,6 +27,7 @@ from app.services.prediction_calibration import (
     calculate_prediction_sort_score,
     has_same_team_projection_priority,
 )
+from app.services.prospect_availability import filter_available_prospects
 from app.services.team_need_adjustment import (
     TeamNeedSnapshot,
     adjust_team_need_after_pick,
@@ -947,6 +948,14 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
     )
     if not prospects:
         raise HTTPException(status_code=404, detail="No prospects found for year")
+
+    # M4-CC: Official withdrawal / availability guard. Remove officially
+    # withdrawn / ineligible prospects from the candidate pool BEFORE ranking.
+    # This is eligibility-only: it does not change talent_score, final_score,
+    # prediction weights, or ranking order. Scoped to draft_year == 2026.
+    prospects = filter_available_prospects(
+        prospects, draft_year=request.year
+    )
 
     selected_prospect_ids: set[int] = set()
     picks: list[SimulatedPickRead] = []
