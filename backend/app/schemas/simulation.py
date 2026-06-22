@@ -28,6 +28,9 @@ class SimulateRequest(BaseModel):
     include_projection_diagnostics: bool = False
     include_prediction_shadow: bool = False
     use_prediction_calibration: bool = False
+    # M4-CF: opt-in Draft-Day Accuracy Mode (S1 consensus-priority). When
+    # False (default) the existing Auto Simulation behaviour is unchanged.
+    draft_day_accuracy_mode: bool = False
     locked_picks: list[LockedPickRequest] | None = None
 
 
@@ -57,3 +60,8 @@ class SimulateResponse(BaseModel):
     source: str | None = None
     picks: list[SimulatedPickRead]
     market_top30_missing_warnings: list[str] = Field(default_factory=list)
+    # M4-CF: identifier for which selection policy produced this response.
+    # "auto_simulation" is the default; "draft_day_accuracy" is the opt-in
+    # S1 consensus-priority mode.
+    mode: str = "auto_simulation"
+    draft_day_accuracy_mode: bool = False

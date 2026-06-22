@@ -448,6 +448,13 @@ export default function DraftPage() {
   // for backwards compatibility.
   const [showPredictionShadow, setShowPredictionShadow] = useState(true);
   const [usePredictionCalibration, setUsePredictionCalibration] = useState(true);
+  // M4-CF: Draft-Day Accuracy Mode (S1 consensus-priority). Opt-in:
+  // when off (default) the existing Auto Simulation is unchanged. When
+  // on, the backend reorders the candidate board by public projection
+  // expected_pick / range / confidence / team signal, using final_score
+  // only as a tie-breaker. It is still an algorithmic mode — the LLM
+  // never participates in selection.
+  const [useDraftDayAccuracyMode, setUseDraftDayAccuracyMode] = useState(false);
   const [news, setNews] = useState<NewsArticle[]>([]);
   const [teamProfile, setTeamProfile] = useState<TeamNeedProfile | null>(null);
   const [teamProfileForm, setTeamProfileForm] = useState<TeamProfileForm>(
@@ -832,6 +839,9 @@ export default function DraftPage() {
         include_prediction_shadow:
           showPredictionShadow || usePredictionCalibration,
         use_prediction_calibration: usePredictionCalibration,
+        // M4-CF: opt-in Draft-Day Accuracy Mode. When false the backend
+        // keeps the existing Auto Simulation behaviour unchanged.
+        draft_day_accuracy_mode: useDraftDayAccuracyMode,
         // Send an empty array (not undefined) so the backend treats the
         // request as the same shape either way.  `undefined` also works
         // because the field is Optional, but explicit is clearer.
@@ -1091,6 +1101,7 @@ export default function DraftPage() {
             rounds={simulationRounds}
             scoutingTiebreaker={useScoutingTiebreaker}
             usePredictionCalibration={usePredictionCalibration}
+            useDraftDayAccuracyMode={useDraftDayAccuracyMode}
           />
 
           <div className="mt-5 rounded-md border border-white/10 bg-court-panel p-5">
@@ -1227,6 +1238,34 @@ export default function DraftPage() {
                   </span>
                   <span className="mt-1 block text-xs leading-5 text-court-muted">
                     打开后，系统会把预测顺位、选秀区间和球队倾向纳入自动选人；关闭时仍按原评分选人。它不会直接照搬媒体模拟榜。
+                  </span>
+                </span>
+              </label>
+            </details>
+
+            {/* M4-CF: Draft-Day Accuracy Mode (S1 consensus-priority).
+                Opt-in toggle. When off, the existing Auto Simulation is
+                unchanged. When on, the backend reorders the candidate
+                board by public projection expected_pick / range /
+                confidence / team signal. It is still algorithmic — the
+                LLM never participates in selection. */}
+            <details className="mt-3 rounded-md border border-emerald-300/20 bg-emerald-300/[0.035] p-3" open={useDraftDayAccuracyMode}>
+              <summary className="cursor-pointer text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
+                真实选秀预测模式 · {useDraftDayAccuracyMode ? "ON" : "OFF"}
+              </summary>
+              <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-md border border-emerald-300/30 bg-emerald-300/[0.06] p-3 transition hover:border-emerald-300/60">
+                <input
+                  checked={useDraftDayAccuracyMode}
+                  className="mt-1 h-4 w-4 accent-emerald-400"
+                  onChange={(event) => setUseDraftDayAccuracyMode(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  <span className="block text-sm font-black text-court-text">
+                    Draft-Day Accuracy Mode（真实选秀预测模式）
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-court-muted">
+                    默认 Auto Simulation 展示系统原始自动模拟；Draft-Day Accuracy Mode 使用公开 projection / consensus 作为强先验，目标是更贴近真实选秀大会结果。它仍然是算法模式，不会让 LLM 参与选人计算。
                   </span>
                 </span>
               </label>
@@ -2174,7 +2213,148 @@ function parseMarketTop30MissingWarning(
   return { name: match[1], expectedPick: Number(match[2]) };
 }
 
+// M4-CF-B: Build a plain-text summary of the simulation result, suitable
+// for pasting into ChatGPT for verification.  Includes mode, year, pick
+// count, full pick list (#pick team player), and the three warning panels
+// (Top-30 not in first round / Top-30 not selected at all / big sliders).
+function formatSimulationForCopy(simulation: Simulation): string {
+  const modeLabel =
+    simulation.mode === "draft_day_accuracy"
+      ? "Draft-Day Accuracy"
+      : "Auto Simulation";
+  const lines: string[] = [];
+  lines.push(`模式：${modeLabel}`);
+  lines.push(`年份：${simulation.year}`);
+  lines.push(`签数：${simulation.total_picks}`);
+  lines.push("");
+  lines.push("完整 pick list：");
+  for (const pick of simulation.picks) {
+    lines.push(
+      `#${pick.pick} ${pick.team.abbr} ${pick.selected_player.prospect.name}`,
+    );
+  }
+
+  // Warning panels — rebuild the same logic as the UI so the pasted
+  // text matches what the user sees on screen.
+  const selectedTop30: MarketTop30Player[] = simulation.picks.flatMap(
+    (pick) => {
+      const expected = getMarketExpectedPick(pick.selected_player);
+      if (expected == null || expected > 30) return [];
+      return [
+        {
+          name: pick.selected_player.prospect.name,
+          expectedPick: expected,
+          actualPick: pick.pick,
+        },
+      ];
+    },
+  );
+  const missingTop30: MarketTop30Player[] = (
+    simulation.market_top30_missing_warnings ?? []
+  )
+    .map(parseMarketTop30MissingWarning)
+    .filter(
+      (item): item is { name: string; expectedPick: number } => item !== null,
+    )
+    .map((item) => ({ ...item, actualPick: null }));
+
+  const allTop30ByName = new Map<string, MarketTop30Player>();
+  [...missingTop30, ...selectedTop30].forEach((player) => {
+    allTop30ByName.set(player.name, player);
+  });
+  const allTop30 = Array.from(allTop30ByName.values());
+
+  const notInFirstRound = allTop30.filter(
+    (player) => player.actualPick == null || player.actualPick > 30,
+  );
+  const notSelectedAtAll =
+    simulation.total_picks >= 60 ? missingTop30 : [];
+  const bigSliders = allTop30.filter(
+    (player) =>
+      player.actualPick != null &&
+      player.actualPick - player.expectedPick >= 8,
+  );
+
+  lines.push("");
+  lines.push("Warning panels：");
+  if (notInFirstRound.length > 0) {
+    lines.push("- 选秀行情 Top-30 未进入首轮提示：");
+    for (const player of notInFirstRound) {
+      if (player.actualPick == null) {
+        lines.push(
+          `  · ${player.name} 预计第 ${player.expectedPick} 顺位，本次 ${simulation.total_picks} 签未选中。`,
+        );
+      } else {
+        lines.push(
+          `  · ${player.name} 预计第 ${player.expectedPick} 顺位，本次第 ${player.actualPick} 顺位，滑落 ${player.actualPick - player.expectedPick} 位。`,
+        );
+      }
+    }
+  }
+  if (notSelectedAtAll.length > 0) {
+    lines.push("- Top-30 完全未被 60 签选中：");
+    for (const player of notSelectedAtAll) {
+      lines.push(
+        `  · ${player.name} 预计第 ${player.expectedPick} 顺位，本次 60 签未选中。`,
+      );
+    }
+  }
+  if (bigSliders.length > 0) {
+    lines.push("- 行情大幅滑落：");
+    for (const player of bigSliders) {
+      if (player.actualPick == null) continue;
+      lines.push(
+        `  · ${player.name} 预计第 ${player.expectedPick} 顺位，本次第 ${player.actualPick} 顺位，滑落 ${player.actualPick - player.expectedPick} 位。`,
+      );
+    }
+  }
+  if (
+    notInFirstRound.length === 0 &&
+    notSelectedAtAll.length === 0 &&
+    bigSliders.length === 0
+  ) {
+    lines.push("- 无 warning。");
+  }
+
+  return lines.join("\n");
+}
+
 function SimulationBoard({ simulation }: { simulation: Simulation }) {
+  // M4-CF-B: copy-to-clipboard state. We keep a small "已复制" label
+  // that auto-resets after 1.5s.  The helper builds a plain-text summary
+  // suitable for pasting into ChatGPT for verification.
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopySimulation() {
+    try {
+      const text = formatSimulationForCopy(simulation);
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === "function"
+      ) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback: use a hidden textarea + document.execCommand.  This
+        // keeps copy working in older browsers / non-secure contexts.
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      // Never let clipboard failure crash the page.
+      // eslint-disable-next-line no-console
+      console.error("Failed to copy simulation result:", err);
+    }
+  }
   // Build the complete list of top-30 market/projection players and where
   // (if anywhere) they were selected in this simulation.
   const selectedTop30: MarketTop30Player[] = simulation.picks.flatMap((pick) => {
@@ -2223,9 +2403,25 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
           </p>
           <h3 className="mt-2 text-2xl font-black">完整顺位模拟</h3>
         </div>
-        <p className="text-sm font-bold text-court-muted">
-          {simulation.year} · {simulation.total_picks} 签
-        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-sm font-bold text-court-muted">
+            {simulation.year} · {simulation.total_picks} 签
+            {simulation.mode === "draft_day_accuracy" ? (
+              <span className="ml-2 rounded border border-emerald-300/40 bg-emerald-300/[0.12] px-2 py-0.5 text-[11px] font-black uppercase tracking-[0.16em] text-emerald-200">
+                Draft-Day Accuracy
+              </span>
+            ) : null}
+          </p>
+          {/* M4-CF-B: one-click copy simulation result as plain text,
+              suitable for pasting into ChatGPT for verification. */}
+          <button
+            className="rounded-md border border-court-line/40 bg-court-line/[0.08] px-3 py-1.5 text-xs font-black uppercase tracking-[0.12em] text-court-text transition hover:border-court-line/80 hover:bg-court-line/[0.16] focus:outline-none focus:ring-2 focus:ring-court-line/40"
+            onClick={handleCopySimulation}
+            type="button"
+          >
+            {copied ? "已复制" : "一键复制结果"}
+          </button>
+        </div>
       </div>
       <p className="mt-3 text-sm leading-6 text-court-muted">
         {simulation.source ?? "选秀顺位来源暂不可用"} · 每一签都会重新计算实时可选候选池，并记录交易评估。
@@ -2533,16 +2729,19 @@ function ModeSummary({
   usePredictionCalibration,
   scoutingTiebreaker,
   lockedCount,
+  useDraftDayAccuracyMode,
 }: {
   rounds: 1 | 2;
   usePredictionCalibration: boolean;
   scoutingTiebreaker: boolean;
   lockedCount: number;
+  useDraftDayAccuracyMode: boolean;
 }) {
   const picksLabel = rounds === 1 ? "30 签" : "60 签";
   const predictionLabel = usePredictionCalibration ? "预测辅助 ON" : "预测辅助 OFF";
   const scoutingLabel = scoutingTiebreaker ? "同档适配 ON" : "同档适配 OFF";
   const lockLabel = lockedCount > 0 ? `手动锁定 ${lockedCount} 条` : "手动锁定 OFF";
+  const accuracyLabel = useDraftDayAccuracyMode ? "真实选秀预测 ON" : "Auto Simulation";
 
   return (
     <div className="mt-5 rounded-md border border-court-line/25 bg-court-line/[0.06] p-4">
@@ -2550,7 +2749,7 @@ function ModeSummary({
         当前模式
       </p>
       <p className="mt-1.5 text-sm font-black text-court-text">
-        {picksLabel} · {predictionLabel} · {scoutingLabel} · {lockLabel}
+        {picksLabel} · {accuracyLabel} · {predictionLabel} · {scoutingLabel} · {lockLabel}
       </p>
       <p className="mt-1 text-[11px] leading-5 text-court-muted">
         Draft-Day Conservative Final Mode · 完整模拟前无需滚动即可看到主按钮

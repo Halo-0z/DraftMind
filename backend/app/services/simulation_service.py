@@ -31,6 +31,9 @@ from app.services.prospect_availability import (
     filter_available_prospects,
     is_officially_unavailable_for_draft,
 )
+from app.services.draft_day_accuracy import (
+    reorder_rankings_by_consensus_priority,
+)
 from app.services.team_need_adjustment import (
     TeamNeedSnapshot,
     adjust_team_need_after_pick,
@@ -978,6 +981,10 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
         or request.include_prediction_shadow
         or request.use_prediction_calibration
     )
+    # M4-CF: Draft-Day Accuracy Mode needs projection data to drive S1
+    # consensus-priority selection. Force-load projections when the mode
+    # is enabled, even if the caller did not request diagnostics.
+    draft_day_accuracy_mode = bool(request.draft_day_accuracy_mode)
 
     # Market context (Phase 5B-M1): read cached news once per simulation
     # and pass it to decision_log. This MUST NOT touch selected_player,
@@ -1037,6 +1044,7 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
             request.include_projection_diagnostics
             or request.include_prediction_shadow
             or request.use_prediction_calibration
+            or draft_day_accuracy_mode
         )
         if include_projection_context:
             prospect_projection_map = _load_prospect_draft_projection_map(
@@ -1169,7 +1177,42 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
             # ---- AUTO PICK BRANCH (v1) ----
             original_top = rankings[0]
             selection_rankings = rankings
-            if request.use_prediction_calibration and prediction_selection_map:
+            # M4-CF-B: Draft-Day Accuracy Mode (S1 consensus-priority) MUST
+            # take precedence over prediction_calibration. Previously this
+            # was an `elif` after `if use_prediction_calibration`, which
+            # meant that when the frontend sent both flags (the frontend
+            # default for use_prediction_calibration is True), the S1
+            # branch was never reached and the mode silently fell back to
+            # the default Auto Simulation selection. Now S1 is checked
+            # first; when it is enabled we still update the
+            # prediction_selection_map afterwards so that diagnostics
+            # remain consistent if calibration is also requested.
+            if draft_day_accuracy_mode:
+                # M4-CF: S1 consensus-priority. Reorder the ranking board
+                # by projection expected_pick / range / confidence / team
+                # signal, using final_score only as a tie-breaker. This
+                # does NOT change ranking_engine, talent_score, or
+                # final_score — it only changes the selection order.
+                selection_rankings = reorder_rankings_by_consensus_priority(
+                    rankings,
+                    prospect_projection_map=prospect_projection_map,
+                    team_projection_map=team_projection_map,
+                    pick_no=draft_pick.pick_no,
+                )
+                if request.use_prediction_calibration and prediction_selection_map:
+                    selected_id = (
+                        selection_rankings[0].prospect.id
+                        if selection_rankings[0].prospect.id is not None
+                        else None
+                    )
+                    prediction_selection_map = _prediction_selection_map_for_rankings(
+                        rankings,
+                        pick_no=draft_pick.pick_no,
+                        prospect_projection_map=prospect_projection_map,
+                        team_projection_map=team_projection_map,
+                        selected_prospect_id=selected_id,
+                    )
+            elif request.use_prediction_calibration and prediction_selection_map:
                 selection_rankings = sorted(
                     rankings,
                     key=lambda ranking: (
@@ -1284,8 +1327,13 @@ def simulate_draft(db: Session, request: SimulateRequest) -> SimulateResponse:
             db,
             year=request.year,
             selected_prospect_ids=selected_prospect_ids,
-            enabled=include_projection_context_for_response,
+            # M4-CF: in Draft-Day Accuracy Mode the warnings are still
+            # useful for diagnostics, so enable them when the mode is on.
+            enabled=include_projection_context_for_response
+            or draft_day_accuracy_mode,
         ),
+        mode="draft_day_accuracy" if draft_day_accuracy_mode else "auto_simulation",
+        draft_day_accuracy_mode=draft_day_accuracy_mode,
     )
 
 

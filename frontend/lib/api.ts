@@ -182,6 +182,11 @@ export type Simulation = {
   source: string | null;
   picks: SimulatedPick[];
   market_top30_missing_warnings?: string[];
+  // M4-CF: identifier for which selection policy produced this response.
+  // "auto_simulation" is the default; "draft_day_accuracy" is the opt-in
+  // S1 consensus-priority mode.
+  mode?: string;
+  draft_day_accuracy_mode?: boolean;
 };
 
 export type SimulatePayload = {
@@ -194,6 +199,9 @@ export type SimulatePayload = {
   include_projection_diagnostics?: boolean;
   include_prediction_shadow?: boolean;
   use_prediction_calibration?: boolean;
+  // M4-CF: opt-in Draft-Day Accuracy Mode (S1 consensus-priority). When
+  // unset/False the existing Auto Simulation behaviour is unchanged.
+  draft_day_accuracy_mode?: boolean;
   // Phase 3: user-override / locked picks.  Each entry pins a specific
   // pick_no to a specific prospect.  The backend (Phase 2) also accepts
   // a free-text `prospect_name` fallback, but the MVP frontend only
