@@ -17,6 +17,21 @@ tags  : simulate-v1-dynamic-needs · simulate-v2-locked-picks
 
 ---
 
+## Current final status
+
+DraftMind 当前 public version 是 2026 NBA Draft 的 final pre-draft prediction build。最终预测入口是 [`/draft`](http://127.0.0.1:3000/draft)，前端默认打开：
+
+- 两轮 60-pick 模拟
+- Draft-Day Accuracy Mode
+- 预测信息辅助选人
+- 名单模式，分析模式可展开逐签解释
+
+Draft-Day Accuracy Mode 不等于新闻自动选人，也不等于 LLM 选人。它是在 DraftMind 自身模拟系统上，引入结构化市场 projection 数据进行排序优先级调整；`ranking_engine` / `simulation_service` / `draft_day_accuracy` 仍然是选人路径。LLM 只负责解释，News/RAG 只作为 read-only context，不直接决定 `selected_player`。
+
+最终成果文档见：[docs/final-project-result-2026.md](docs/final-project-result-2026.md)。
+
+---
+
 ## 1. 一句话介绍
 
 DraftMind 是一个 NBA 选秀决策智能体，按 **球队需求 + 可解释评分 + 动态顺位推演 + 用户锁签覆盖** 模拟完整 GM 决策流程，LLM 只在解释层介入。
