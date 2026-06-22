@@ -312,15 +312,65 @@ function formatMarketWarning(message: string): string {
 function formatTradeAction(action: string | null | undefined): string {
   const labels: Record<string, string> = {
     keep_pick: "保留选择",
-    shop_down: "考虑向下交易",
-    trade_down: "考虑向下交易",
-    trade_up: "考虑向上交易",
+    shop_down: "可考虑向下交易",
+    trade_down: "可考虑向下交易",
+    trade_up: "可考虑向上交易",
+    field_trade_up_calls: "可接听向上交易询价",
+    sell_pick_or_two_way: "可考虑出售或转双向合同",
     watch: "继续观察",
   };
   if (!action) {
     return "未知状态";
   }
   return labels[action.toLowerCase()] ?? "未知状态";
+}
+
+// M4-CQ: Translate the English trade_evaluation.rationale into a short
+// Chinese summary.  The backend rationale is one of a small fixed set of
+// English strings (see evaluate_trade_market in simulation_service.py).
+// We map each to a Chinese explanation that a non-developer can read.
+// Unknown rationales fall back to a generic Chinese note (never undefined).
+function formatTradeRationaleZh(rationale: string | null | undefined): string {
+  if (!rationale) {
+    return "系统未提供交易建议的具体原因。";
+  }
+  const exact: Record<string, string> = {
+    "Trade evaluation disabled for this simulation.":
+      "本次模拟未开启交易评估，因此不产生交易建议。",
+    "A high-value prospect is available in the lottery, so other teams may call about moving up. Current GM keeps the pick unless an overpay arrives.":
+      "乐透区出现高价值球员，其他球队可能询价向上交易。当前球队保留签位，除非出现明显溢价报价。",
+    "The board is flat at this range, so trading down is plausible if the team can add a future second or move into a similar tier.":
+      "该区间候选人差距不大，如果球队能多换一个未来二轮签，或退到相近档位，向下交易是可考虑方案。",
+    "Late second-round value is modest; a cash, stash, or two-way path is realistic.":
+      "次轮后段价值有限，出售签位、stash 或转双向合同是现实选项。",
+    "The top ranked player separates enough from the board to submit the pick.":
+      "首选球员与候选池差距足够大，建议直接提交选择。",
+  };
+  if (exact[rationale]) {
+    return exact[rationale];
+  }
+  // Fallback: return the raw rationale but prefixed with a Chinese note,
+  // so users never see an unexplained English string.
+  return `系统建议：${rationale}`;
+}
+
+// M4-CQ: Explain what the trade probability number means.  The backend
+// field is named `probability`, but it is NOT a trade success rate — it
+// is a trade-down / trade-action inclination strength.  This helper
+// returns a short Chinese clause that makes the meaning unambiguous.
+function formatTradeProbabilityMeaning(
+  action: string | null | undefined,
+  probability: number,
+): string {
+  const pct = Math.round(probability * 100);
+  const actionLower = (action ?? "").toLowerCase();
+  if (actionLower === "keep_pick") {
+    if (pct === 0) {
+      return "未开启交易评估";
+    }
+    return `交易建议强度 ${pct}%（倾向保留签位）`;
+  }
+  return `交易建议强度 ${pct}%`;
 }
 
 function formatDiagnosticText(message: string): string {
@@ -438,7 +488,7 @@ export default function DraftPage() {
   const [isPickOverridden, setIsPickOverridden] = useState(false);
   const [agentAnswer, setAgentAnswer] = useState<AgentAskResponse | null>(null);
   const [simulation, setSimulation] = useState<Simulation | null>(null);
-  const [simulationRounds, setSimulationRounds] = useState<1 | 2>(1);
+  const [simulationRounds, setSimulationRounds] = useState<1 | 2>(2);
   const [showScoutingDiagnostics, setShowScoutingDiagnostics] = useState(false);
   const [useScoutingTiebreaker, setUseScoutingTiebreaker] = useState(false);
   // Phase 6B: default DraftMind into "real draft prediction" mode — show
@@ -448,13 +498,10 @@ export default function DraftPage() {
   // for backwards compatibility.
   const [showPredictionShadow, setShowPredictionShadow] = useState(true);
   const [usePredictionCalibration, setUsePredictionCalibration] = useState(true);
-  // M4-CF: Draft-Day Accuracy Mode (S1 consensus-priority). Opt-in:
-  // when off (default) the existing Auto Simulation is unchanged. When
-  // on, the backend reorders the candidate board by public projection
-  // expected_pick / range / confidence / team signal, using final_score
-  // only as a tie-breaker. It is still an algorithmic mode — the LLM
-  // never participates in selection.
-  const [useDraftDayAccuracyMode, setUseDraftDayAccuracyMode] = useState(false);
+  // M4-CF/M4-CQ-E: frontend default shows the final prediction view.
+  // Backend defaults and API schema stay unchanged; users can still switch
+  // back to Auto Simulation / one-round mode manually.
+  const [useDraftDayAccuracyMode, setUseDraftDayAccuracyMode] = useState(true);
   const [news, setNews] = useState<NewsArticle[]>([]);
   const [teamProfile, setTeamProfile] = useState<TeamNeedProfile | null>(null);
   const [teamProfileForm, setTeamProfileForm] = useState<TeamProfileForm>(
@@ -1111,6 +1158,14 @@ export default function DraftPage() {
             <p className="mt-3 text-sm leading-6 text-court-muted">
               按选秀顺位逐签模拟，已选球员会从后续候选池移除。
             </p>
+            <div className="mt-4 rounded-md border border-emerald-500/40 bg-emerald-50/70 p-3">
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-800">
+                推荐模式：最终预测模拟
+              </p>
+              <p className="mt-2 text-xs leading-5 text-court-muted">
+                适合查看 DraftMind 当前最接近真实选秀大会的预测结果；Auto Simulation 可用于对比系统原始评分。
+              </p>
+            </div>
 
             <details className="mt-4 rounded-md border border-white/10 bg-court-black/55 p-3" open>
               <summary className="cursor-pointer text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
@@ -1249,14 +1304,14 @@ export default function DraftPage() {
                 board by public projection expected_pick / range /
                 confidence / team signal. It is still algorithmic — the
                 LLM never participates in selection. */}
-            <details className="mt-3 rounded-md border border-emerald-300/20 bg-emerald-300/[0.035] p-3" open={useDraftDayAccuracyMode}>
-              <summary className="cursor-pointer text-[11px] font-black uppercase tracking-[0.16em] text-court-line">
+            <details className="mt-3 rounded-md border border-emerald-500/40 bg-emerald-50/70 p-3" open={useDraftDayAccuracyMode}>
+              <summary className="cursor-pointer text-[11px] font-black uppercase tracking-[0.16em] text-emerald-800">
                 真实选秀预测模式 · {useDraftDayAccuracyMode ? "ON" : "OFF"}
               </summary>
-              <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-md border border-emerald-300/30 bg-emerald-300/[0.06] p-3 transition hover:border-emerald-300/60">
+              <label className={`mt-3 flex cursor-pointer items-start gap-3 rounded-md border p-3 transition hover:border-emerald-500/70 ${useDraftDayAccuracyMode ? "border-emerald-500/60 bg-emerald-100/50" : "border-emerald-500/30 bg-emerald-50/50"}`}>
                 <input
                   checked={useDraftDayAccuracyMode}
-                  className="mt-1 h-4 w-4 accent-emerald-400"
+                  className="mt-1 h-4 w-4 accent-emerald-600"
                   onChange={(event) => setUseDraftDayAccuracyMode(event.target.checked)}
                   type="checkbox"
                 />
@@ -2146,6 +2201,472 @@ function RiskDiagnosticsWarnings({
   );
 }
 
+// ---------------------------------------------------------------------------
+// M4-CQ: Pick explanation summary (Chinese, 5-layer).
+//
+// This component renders a user-facing Chinese explanation of *why* a pick
+// was made, *what risks* it carries, *why alternatives were not chosen*,
+// and *what the trade suggestion means*.  It is purely display-only — it
+// reads existing fields on `pick` and `simulation` and never calls the
+// backend, never changes selection, and never hardcodes player/team names.
+//
+// Layers:
+//   A. 主结论 — why this player was selected (dynamic from projection /
+//      prediction / decision_log fields)
+//   B. 风险提示 — risk notes when prediction overrode original top
+//   C. 候选对比 — original top vs selected comparison
+//   D. 交易建议 — Chinese explanation of trade_evaluation
+//
+// The raw English agent trace (decision_log) stays in the existing
+// `<details>` block below, which is renamed to "技术日志 / 原始决策流程".
+// ---------------------------------------------------------------------------
+
+// Parse "Original top candidate was X." from decision_log to recover the
+// name of the candidate that the raw ranking engine ranked #1 before
+// prediction calibration / Draft-Day Accuracy Mode reordered the board.
+// Returns null if the line is absent (e.g. prediction calibration did not
+// change the top candidate, or the mode is Auto Simulation).
+function parseOriginalTopName(pick: SimulatedPick): string | null {
+  for (const line of pick.decision_log) {
+    const match = line.match(/^Original top candidate was (.+)\.$/);
+    if (match) {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+// Find the first alternative (by final_score desc) whose name differs from
+// the selected player.  Used to surface "the next-best candidate" in the
+// candidate comparison layer.  Returns null if there is no such candidate.
+function findTopAlternative(pick: SimulatedPick): RankedProspect | null {
+  for (const alt of pick.alternatives) {
+    if (alt.prospect.name !== pick.selected_player.prospect.name) {
+      return alt;
+    }
+  }
+  return null;
+}
+
+// Build the "why selected" Chinese summary lines.  Dynamic from fields:
+//   - simulation.mode / draft_day_accuracy_mode
+//   - selected_player.projection_expected_pick / draft_range / confidence
+//   - selected_player.prediction_selection_applied
+//   - original top name (parsed from decision_log)
+//
+// Returns an array of plain-text Chinese lines.  Empty array means "no
+// meaningful explanation to show" (caller should hide the section).
+function buildPickConclusionLines(
+  pick: SimulatedPick,
+  simulation: Simulation,
+): string[] {
+  const lines: string[] = [];
+  const selected = pick.selected_player;
+  const selectedName = selected.prospect.name;
+  const isDraftDayMode = simulation.mode === "draft_day_accuracy";
+  const originalTopName = parseOriginalTopName(pick);
+  const expectedPick = selected.projection_expected_pick;
+  const rangeMin = selected.projection_draft_range_min;
+  const rangeMax = selected.projection_draft_range_max;
+  const confidence = selected.projection_confidence;
+
+  // A.1 — Header line
+  if (isDraftDayMode) {
+    lines.push(`真实选秀预测模式启用，系统优先参考市场预测顺位和选秀区间。`);
+  }
+
+  // A.2 — If prediction calibration / Draft-Day Accuracy Mode changed the
+  // top candidate, explain the divergence.
+  if (originalTopName && originalTopName !== selectedName) {
+    lines.push(
+      `原始评分第一是 ${originalTopName}，但最终选择了 ${selectedName}。`,
+    );
+    if (isDraftDayMode) {
+      lines.push(
+        `原因：真实选秀预测模式以外部预测顺位为优先信号，原始综合分仅作为同区间内的参考。`,
+      );
+    } else if (selected.prediction_selection_applied) {
+      lines.push(
+        `原因：预测信息辅助选人模式根据预测顺位、选秀区间和球队倾向重新排序，因此可能选择综合分不是最高的球员。`,
+      );
+    }
+  } else {
+    // No divergence — selected is also the original top.
+    lines.push(`系统选择 ${selectedName}。`);
+    if (isDraftDayMode) {
+      lines.push(
+        `该球员在真实选秀预测模式下仍排在候选池顶部，符合市场预测顺位。`,
+      );
+    }
+  }
+
+  // A.3 — Projection detail lines (only if we have data)
+  if (expectedPick != null) {
+    lines.push(
+      `${selectedName}：预测顺位 #${expectedPick}` +
+        (rangeMin != null && rangeMax != null
+          ? `，选秀区间 ${rangeMin}-${rangeMax}`
+          : "") +
+        (confidence != null
+          ? `，预测可信度 ${Math.round(confidence * 100)}%`
+          : ""),
+    );
+    if (rangeMin != null && rangeMax != null) {
+      if (pick.pick >= rangeMin && pick.pick <= rangeMax) {
+        lines.push(`当前签位 #${pick.pick} 处于他的预测区间内。`);
+      } else if (pick.pick < rangeMin) {
+        lines.push(
+          `当前签位 #${pick.pick} 略早于预测区间 ${rangeMin}-${rangeMax}，属于偏激进选择。`,
+        );
+      } else {
+        lines.push(
+          `当前签位 #${pick.pick} 略晚于预测区间 ${rangeMin}-${rangeMax}，存在行情滑落。`,
+        );
+      }
+    }
+  }
+
+  // A.4 — If there is a top alternative with higher final_score, mention it
+  const topAlt = findTopAlternative(pick);
+  if (topAlt && topAlt.scores.final_score > selected.scores.final_score) {
+    lines.push(
+      `候选 ${topAlt.prospect.name} 的原始综合分（${topAlt.scores.final_score}）高于 ${selectedName}（${selected.scores.final_score}），但未被选中。`,
+    );
+    if (isDraftDayMode) {
+      lines.push(
+        `真实选秀预测模式认为 ${selectedName} 更接近当前市场行情，因此优先选择。`,
+      );
+    }
+  }
+
+  return lines;
+}
+
+// Build risk lines.  Dynamic from:
+//   - original top != selected
+//   - alternatives with higher final_score
+//   - prediction confidence low
+//   - pick outside projected range
+function buildPickRiskLines(
+  pick: SimulatedPick,
+  simulation: Simulation,
+): string[] {
+  const lines: string[] = [];
+  const selected = pick.selected_player;
+  const originalTopName = parseOriginalTopName(pick);
+  const isDraftDayMode = simulation.mode === "draft_day_accuracy";
+  const topAlt = findTopAlternative(pick);
+
+  const hasScoreDivergence =
+    topAlt != null && topAlt.scores.final_score > selected.scores.final_score;
+  const hasTopDivergence =
+    originalTopName != null && originalTopName !== selected.prospect.name;
+
+  if (hasTopDivergence || hasScoreDivergence || isDraftDayMode) {
+    lines.push(
+      "这个选择更贴近市场预测，但不一定是球队 fit 最优解。",
+    );
+  }
+
+  if (hasScoreDivergence && topAlt) {
+    lines.push(
+      `原始评分中 ${topAlt.prospect.name}（${topAlt.scores.final_score}）高于 ${selected.prospect.name}（${selected.scores.final_score}），这里存在 team-fit / board-value 争议。`,
+    );
+  }
+
+  const confidence = selected.projection_confidence;
+  if (confidence != null && confidence < 0.5) {
+    lines.push(
+      `该球员的预测可信度较低（${Math.round(confidence * 100)}%），市场信号可能不稳定。`,
+    );
+  }
+
+  const rangeMin = selected.projection_draft_range_min;
+  const rangeMax = selected.projection_draft_range_max;
+  if (rangeMin != null && rangeMax != null && pick.pick > rangeMax) {
+    lines.push(
+      `实际选择（#${pick.pick}）晚于预测区间 ${rangeMin}-${rangeMax}，存在行情滑落风险。`,
+    );
+  }
+
+  // Generic team-fit risk note (never hardcodes a team/player)
+  if (hasScoreDivergence || hasTopDivergence) {
+    lines.push("该 pick 存在 team-fit 风险，请结合候选池和证据面板判断。");
+  }
+
+  return lines;
+}
+
+// Build candidate comparison lines.  Shows original top vs prediction
+// priority vs final selection.
+function buildCandidateComparisonLines(pick: SimulatedPick): string[] {
+  const lines: string[] = [];
+  const selected = pick.selected_player;
+  const originalTopName = parseOriginalTopName(pick);
+  const topAlt = findTopAlternative(pick);
+
+  // Original top (by final_score)
+  if (originalTopName) {
+    // Try to find the original top's score from alternatives or candidate_board
+    const originalTopCandidate =
+      pick.alternatives.find(
+        (a) => a.prospect.name === originalTopName,
+      ) ??
+      pick.candidate_board.find((a) => a.prospect.name === originalTopName);
+    lines.push(
+      `原始评分第一：${originalTopName}` +
+        (originalTopCandidate
+          ? `（${originalTopCandidate.scores.final_score}）`
+          : ""),
+    );
+  } else if (topAlt) {
+    lines.push(
+      `原始评分最高：${topAlt.prospect.name}（${topAlt.scores.final_score}）`,
+    );
+  }
+
+  // Prediction priority (by expected_pick)
+  const expectedPick = selected.projection_expected_pick;
+  if (expectedPick != null) {
+    lines.push(
+      `预测排序优先：${selected.prospect.name}（预测 #${expectedPick}）`,
+    );
+  }
+
+  // Final selection
+  lines.push(
+    `最终选择：${selected.prospect.name}（综合 ${selected.scores.final_score}）`,
+  );
+
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// M4-CQ-B: Chinese decision-flow summary for the "技术日志" panel.
+//
+// The backend `decision_log` is an array of English lines (see
+// simulation_service._build_decision_log).  This helper walks the log and
+// produces a numbered Chinese step list that a non-developer can read.
+// It is purely display-only and never changes selection.
+//
+// Each English line is matched by prefix; unmatched lines are skipped
+// (we never surface undefined / null).  The steps are ordered the same
+// way the backend emits them.
+// ---------------------------------------------------------------------------
+function buildDecisionFlowZh(
+  pick: SimulatedPick,
+  simulation: Simulation,
+): string[] {
+  const steps: string[] = [];
+  const selected = pick.selected_player;
+  const selectedName = selected.prospect.name;
+  const teamAbbr = pick.team.abbr;
+  const isDraftDayMode = simulation.mode === "draft_day_accuracy";
+  const originalTopName = parseOriginalTopName(pick);
+  const expectedPick = selected.projection_expected_pick;
+  const rangeMin = selected.projection_draft_range_min;
+  const rangeMax = selected.projection_draft_range_max;
+
+  // Step 1: pick on the clock
+  steps.push(`第 ${pick.pick} 顺位，${teamAbbr} 进入选择。`);
+
+  // Step 2: filter + re-rank
+  steps.push("系统先移除已经被选走的球员，然后重新排序当前候选池。");
+
+  // Step 3: top candidate
+  steps.push(
+    `当前排序最高候选是 ${selectedName}，综合评分 ${selected.scores.final_score}。`,
+  );
+
+  // Step 4: alternatives checked — parse from decision_log line
+  // "Alternatives checked: Nate Ament (68.1), Brayden Burries (61.1), ..."
+  for (const line of pick.decision_log) {
+    const match = line.match(/^Alternatives checked:\s*(.+)\.$/);
+    if (match) {
+      // Extract just the names (before the parenthesis)
+      const altNames = match[1]
+        .split(",")
+        .map((part) => {
+          const nameMatch = part.trim().match(/^([^(]+)/);
+          return nameMatch ? nameMatch[1].trim() : part.trim();
+        })
+        .filter(Boolean);
+      if (altNames.length > 0) {
+        steps.push(`系统同时检查了其他候选人：${altNames.join("、")}。`);
+      }
+      break;
+    }
+  }
+
+  // Step 5: prediction calibration / Draft-Day Accuracy divergence
+  if (originalTopName && originalTopName !== selectedName) {
+    if (isDraftDayMode) {
+      steps.push(
+        `原始评分第一是 ${originalTopName}，但真实选秀预测模式启用后，${selectedName} 的市场预测顺位更靠前。`,
+      );
+    } else {
+      steps.push(
+        `原始评分第一是 ${originalTopName}，但预测信息辅助选人模式重新排序后，${selectedName} 优先级更高。`,
+      );
+    }
+  }
+
+  // Step 6: projection detail
+  if (expectedPick != null) {
+    if (rangeMin != null && rangeMax != null) {
+      steps.push(
+        `${selectedName} 的预测顺位是 #${expectedPick}，当前 #${pick.pick} 处于他的预测区间 ${rangeMin}-${rangeMax} 内。`,
+      );
+    } else {
+      steps.push(
+        `${selectedName} 的预测顺位是 #${expectedPick}。`,
+      );
+    }
+  }
+
+  // Step 7: selected by
+  let selectedByZh = "";
+  for (const line of pick.decision_log) {
+    if (line.startsWith("Selected by prediction_sort_score")) {
+      selectedByZh = "系统最终按预测排序分选择";
+      break;
+    }
+  }
+  if (!selectedByZh) {
+    selectedByZh = "系统最终提交选择";
+  }
+  steps.push(`${selectedByZh} ${selectedName}。`);
+
+  // Step 8: trade suggestion
+  const trade = pick.trade_evaluation;
+  const tradeActionZh = formatTradeAction(trade.action);
+  const tradeProbPct = Math.round(trade.probability * 100);
+  if ((trade.action ?? "").toLowerCase() !== "keep_pick" || tradeProbPct > 0) {
+    steps.push(
+      `交易建议显示“${tradeActionZh}”，建议强度 ${tradeProbPct}%。该建议只是辅助，不代表交易已经发生，也不会改变当前选择。`,
+    );
+  } else {
+    steps.push("交易建议为保留当前签位。");
+  }
+
+  // Step 9: post-pick update
+  steps.push(
+    `选中 ${selectedName} 后，他会从后续候选池中移除，球队需求会为后续签位更新。`,
+  );
+
+  return steps;
+}
+
+function PickExplanationSummary({
+  pick,
+  simulation,
+}: {
+  pick: SimulatedPick;
+  simulation: Simulation;
+}) {
+  const conclusionLines = buildPickConclusionLines(pick, simulation);
+  const riskLines = buildPickRiskLines(pick, simulation);
+  const comparisonLines = buildCandidateComparisonLines(pick);
+
+  // Trade suggestion
+  const trade = pick.trade_evaluation;
+  const tradeActionZh = formatTradeAction(trade.action);
+  const tradeProbMeaning = formatTradeProbabilityMeaning(
+    trade.action,
+    trade.probability,
+  );
+  const tradeRationaleZh = formatTradeRationaleZh(trade.rationale);
+  const isKeepPick = (trade.action ?? "").toLowerCase() === "keep_pick";
+  const tradeEvalDisabled = trade.probability === 0 && isKeepPick;
+
+  if (conclusionLines.length === 0 && tradeEvalDisabled) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3 grid gap-3">
+      {/* A. 主结论 — why selected */}
+      {conclusionLines.length > 0 ? (
+        <div className="rounded-md border border-emerald-500/40 bg-emerald-50/70 px-3 py-2.5">
+          <p className="text-xs font-black tracking-[0.12em] text-emerald-900">
+            为什么选中 {pick.selected_player.prospect.name}？
+          </p>
+          <ul className="mt-2 grid gap-1.5 text-xs leading-6 text-court-text">
+            {conclusionLines.map((line, idx) => (
+              <li className="flex items-start gap-1.5" key={`conclusion-${idx}`}>
+                <span aria-hidden="true" className="mt-1 shrink-0 text-emerald-700">
+                  •
+                </span>
+                <span className="min-w-0">{line}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {/* B. 风险提示 */}
+      {riskLines.length > 0 ? (
+        <div className="rounded-md border border-amber-500/40 bg-amber-50/70 px-3 py-2.5">
+          <p className="text-xs font-black tracking-[0.12em] text-amber-900">
+            风险提示
+          </p>
+          <ul className="mt-2 grid gap-1.5 text-xs leading-6 text-court-text">
+            {riskLines.map((line, idx) => (
+              <li className="flex items-start gap-1.5" key={`risk-${idx}`}>
+                <span aria-hidden="true" className="mt-1 shrink-0 text-amber-700">
+                  •
+                </span>
+                <span className="min-w-0">{line}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {/* C. 候选对比 */}
+      {comparisonLines.length > 0 ? (
+        <div className="rounded-md border border-sky-500/40 bg-sky-50/70 px-3 py-2.5">
+          <p className="text-xs font-black tracking-[0.12em] text-sky-900">
+            候选对比
+          </p>
+          <ul className="mt-2 grid gap-1.5 text-xs leading-6 text-court-text">
+            {comparisonLines.map((line, idx) => (
+              <li className="flex items-start gap-1.5" key={`compare-${idx}`}>
+                <span aria-hidden="true" className="mt-1 shrink-0 text-sky-700">
+                  •
+                </span>
+                <span className="min-w-0">{line}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-[11px] leading-5 text-court-muted">
+            真实选秀预测模式会优先考虑外部预测顺位和选秀区间，因此可能选择综合分不是最高的球员。
+          </p>
+        </div>
+      ) : null}
+
+      {/* D. 交易建议 */}
+      <div className="rounded-md border border-court-border bg-court-panel px-3 py-2.5">
+        <p className="text-xs font-black tracking-[0.12em] text-court-text">
+          交易建议 · {tradeActionZh} · {tradeProbMeaning}
+        </p>
+        <p className="mt-2 text-xs leading-6 text-court-text/85">
+          {tradeRationaleZh}
+        </p>
+        <p className="mt-2 text-[11px] leading-5 text-court-muted">
+          注意：这只是交易建议，不代表已经发生交易，也不会自动改变本次模拟选人。当前模拟仍然选择{" "}
+          {pick.selected_player.prospect.name}。
+          {!tradeEvalDisabled && isKeepPick
+            ? " 此处“交易建议强度”表示倾向保留签位的程度，不是交易成功率。"
+            : !tradeEvalDisabled
+              ? " 此处“交易建议强度”表示该交易方向的倾向强度，不是交易成功率。"
+              : ""}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function CandidateBoardPreview({
   candidates,
 }: {
@@ -2214,6 +2735,72 @@ function parseMarketTop30MissingWarning(
 }
 
 // M4-CF-B: Build a plain-text summary of the simulation result, suitable
+// M4-CQ-C: format a single pick's Chinese explanation as plain text for
+// clipboard copy.  Reuses buildPickConclusionLines / buildPickRiskLines /
+// buildCandidateComparisonLines / formatTradeRationaleZh /
+// formatTradeProbabilityMeaning so there is a single source of truth.
+// Never copies English raw trace — only the Chinese summary.
+function formatPickForCopy(pick: SimulatedPick, simulation: Simulation): string {
+  const selected = pick.selected_player;
+  const modeLabel =
+    simulation.mode === "draft_day_accuracy"
+      ? "Draft-Day Accuracy"
+      : "Auto Simulation";
+  const lines: string[] = [];
+
+  // Header
+  lines.push(`#${pick.pick} ${pick.team.abbr} ${selected.prospect.name}`);
+  const position = selected.prospect.position;
+  if (position) {
+    lines.push(`位置：${position}`);
+  }
+  lines.push(`综合评分：${selected.scores.final_score}`);
+  lines.push(`模式：${modeLabel}`);
+  lines.push("");
+
+  // Why selected
+  const conclusionLines = buildPickConclusionLines(pick, simulation);
+  if (conclusionLines.length > 0) {
+    lines.push("为什么选中：");
+    for (const line of conclusionLines) {
+      lines.push(`- ${line}`);
+    }
+    lines.push("");
+  }
+
+  // Risk
+  const riskLines = buildPickRiskLines(pick, simulation);
+  if (riskLines.length > 0) {
+    lines.push("风险提示：");
+    for (const line of riskLines) {
+      lines.push(`- ${line}`);
+    }
+    lines.push("");
+  }
+
+  // Candidate comparison
+  const comparisonLines = buildCandidateComparisonLines(pick);
+  if (comparisonLines.length > 0) {
+    lines.push("候选对比：");
+    for (const line of comparisonLines) {
+      lines.push(`- ${line}`);
+    }
+    lines.push("");
+  }
+
+  // Trade suggestion
+  const trade = pick.trade_evaluation;
+  const tradeActionZh = formatTradeAction(trade.action);
+  const tradeProbPct = Math.round(trade.probability * 100);
+  lines.push("交易建议：");
+  lines.push(`${tradeActionZh}，交易建议强度 ${tradeProbPct}%。`);
+  lines.push(formatTradeRationaleZh(trade.rationale));
+  lines.push("这不是交易成功率，不代表已经发生交易，也不会自动改变本次模拟选人。");
+
+  return lines.join("\n");
+}
+
+// M4-CF-B: format the full simulation result as plain text, suitable
 // for pasting into ChatGPT for verification.  Includes mode, year, pick
 // count, full pick list (#pick team player), and the three warning panels
 // (Top-30 not in first round / Top-30 not selected at all / big sliders).
@@ -2226,12 +2813,55 @@ function formatSimulationForCopy(simulation: Simulation): string {
   lines.push(`模式：${modeLabel}`);
   lines.push(`年份：${simulation.year}`);
   lines.push(`签数：${simulation.total_picks}`);
+  // M4-CQ: brief mode explanation so the reader of the pasted text
+  // understands what "Draft-Day Accuracy" means without reading the UI.
+  if (simulation.mode === "draft_day_accuracy") {
+    lines.push(
+      "说明：真实选秀预测模式启用，系统优先参考市场预测顺位和选秀区间；预测辅助 ON 时，可能选择综合分不是最高的球员。",
+    );
+  } else {
+    lines.push("说明：自动模拟模式，按原始综合分排序选人。");
+  }
   lines.push("");
   lines.push("完整 pick list：");
   for (const pick of simulation.picks) {
     lines.push(
       `#${pick.pick} ${pick.team.abbr} ${pick.selected_player.prospect.name}`,
     );
+  }
+
+  // M4-CQ: Key risk notes — picks where the original top candidate
+  // (by final_score) differs from the final selected player, or where
+  // a trade-down suggestion exists.  This helps the reader spot
+  // controversial picks without scanning all 60 cards.
+  const riskPicks: string[] = [];
+  const tradeDownPicks: string[] = [];
+  for (const pick of simulation.picks) {
+    const originalTopName = parseOriginalTopName(pick);
+    const selectedName = pick.selected_player.prospect.name;
+    if (originalTopName && originalTopName !== selectedName) {
+      riskPicks.push(
+        `  · #${pick.pick} ${pick.team.abbr}：原始评分第一 ${originalTopName}，最终选择 ${selectedName}`,
+      );
+    }
+    const action = (pick.trade_evaluation.action ?? "").toLowerCase();
+    if (action === "shop_down" || action === "trade_down") {
+      tradeDownPicks.push(
+        `  · #${pick.pick} ${pick.team.abbr} ${selectedName}：可考虑向下交易（交易建议强度 ${Math.round(pick.trade_evaluation.probability * 100)}%，非交易成功率）`,
+      );
+    }
+  }
+  if (riskPicks.length > 0 || tradeDownPicks.length > 0) {
+    lines.push("");
+    lines.push("关键风险提示：");
+    if (riskPicks.length > 0) {
+      lines.push("- 原始评分第一与最终选择不同：");
+      lines.push(...riskPicks);
+    }
+    if (tradeDownPicks.length > 0) {
+      lines.push("- 存在向下交易建议（仅建议，未实际交易）：");
+      lines.push(...tradeDownPicks);
+    }
   }
 
   // Warning panels — rebuild the same logic as the UI so the pasted
@@ -2324,6 +2954,7 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
   // that auto-resets after 1.5s.  The helper builds a plain-text summary
   // suitable for pasting into ChatGPT for verification.
   const [copied, setCopied] = useState(false);
+  const [displayMode, setDisplayMode] = useState<"list" | "analysis">("list");
 
   async function handleCopySimulation() {
     try {
@@ -2353,6 +2984,38 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
       // Never let clipboard failure crash the page.
       // eslint-disable-next-line no-console
       console.error("Failed to copy simulation result:", err);
+    }
+  }
+
+  // M4-CQ-C: per-pick copy state.  We track which pick was just copied so
+  // the button can show "已复制" briefly, then auto-reset.
+  const [copiedPickId, setCopiedPickId] = useState<number | null>(null);
+
+  async function handleCopyPick(pick: SimulatedPick) {
+    try {
+      const text = formatPickForCopy(pick, simulation);
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === "function"
+      ) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setCopiedPickId(pick.pick);
+      window.setTimeout(() => setCopiedPickId(null), 1500);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("Failed to copy pick explanation:", err);
     }
   }
   // Build the complete list of top-30 market/projection players and where
@@ -2404,10 +3067,32 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
           <h3 className="mt-2 text-2xl font-black">完整顺位模拟</h3>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          <div className="grid grid-cols-2 overflow-hidden rounded-md border border-court-border bg-court-faint text-xs font-black">
+            {[
+              { key: "list" as const, label: "名单模式" },
+              { key: "analysis" as const, label: "分析模式" },
+            ].map((option) => {
+              const active = displayMode === option.key;
+              return (
+                <button
+                  aria-pressed={active}
+                  className={`px-3 py-1.5 transition ${active
+                    ? "bg-court-line text-court-black"
+                    : "text-court-muted hover:bg-court-panel hover:text-court-text"
+                    }`}
+                  key={option.key}
+                  onClick={() => setDisplayMode(option.key)}
+                  type="button"
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
           <p className="text-sm font-bold text-court-muted">
             {simulation.year} · {simulation.total_picks} 签
             {simulation.mode === "draft_day_accuracy" ? (
-              <span className="ml-2 rounded border border-emerald-300/40 bg-emerald-300/[0.12] px-2 py-0.5 text-[11px] font-black uppercase tracking-[0.16em] text-emerald-200">
+              <span className="ml-2 rounded border border-emerald-500/60 bg-emerald-100/70 px-2 py-0.5 text-[11px] font-black uppercase tracking-[0.16em] text-emerald-800">
                 Draft-Day Accuracy
               </span>
             ) : null}
@@ -2517,7 +3202,8 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
             const locked = isPickLocked(pick);
             return (
               <article
-                className="border-t border-white/10 px-4 py-4 transition hover:bg-white/[0.03]"
+                className={`border-t border-white/10 px-4 transition hover:bg-white/[0.03] ${displayMode === "list" ? "py-3" : "py-4"
+                  }`}
                 key={pick.pick}
               >
                 <div className="grid grid-cols-[64px_82px_1fr_72px] items-center gap-0">
@@ -2554,63 +3240,158 @@ function SimulationBoard({ simulation }: { simulation: Simulation }) {
                     warnings={diagnosticsWarnings(pick.selected_player)}
                   />
                 </div>
-                <details className="mt-3 rounded-md border border-white/10 bg-court-black/60 px-3 py-2">
-                  <summary className="cursor-pointer text-xs font-black uppercase tracking-[0.12em] text-court-line">
-                    决策流程 · {formatTradeAction(pick.trade_evaluation.action)} ·{" "}
-                    {Math.round(pick.trade_evaluation.probability * 100)}%
+                {/* M4-CQ: user-facing Chinese explanation layers
+                    (conclusion / risk / candidate comparison / trade
+                    suggestion).  Purely display-only, dynamic from
+                    existing fields, never hardcodes player/team. */}
+                {/* M4-CQ-D: copy button stays visible outside the collapse
+                    so users can copy without expanding. */}
+                <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    className="rounded border border-court-border bg-court-panel px-2.5 py-1 text-[11px] font-bold text-court-text transition hover:border-court-line hover:text-court-line"
+                    onClick={() => handleCopyPick(pick)}
+                    type="button"
+                  >
+                    {copiedPickId === pick.pick ? "已复制" : "复制本签解释"}
+                  </button>
+                </div>
+                {/* M4-CQ-D: default-collapsed pick explanation.  The full
+                    Chinese explanation + tech log + candidate board are
+                    wrapped here so the draft list stays compact.  Status
+                    badges in the summary let users see at a glance whether
+                    this pick has a prediction override / score divergence /
+                    trade suggestion without expanding. */}
+                <details
+                  className="group mt-2 rounded-md border border-court-border bg-court-panel px-3 py-2"
+                  key={`explanation-${pick.pick}-${displayMode}`}
+                  open={displayMode === "analysis" ? true : undefined}
+                >
+                  <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-xs font-black tracking-[0.12em] text-court-text">
+                    <span
+                      aria-hidden="true"
+                      className="inline-block h-0 w-0 shrink-0 border-y-[5px] border-l-[7px] border-y-transparent border-l-court-line transition-transform group-open:rotate-90"
+                    />
+                    <span>查看本签解释 / 候选对比 / 交易建议</span>
+                    {pick.selected_player.prediction_selection_applied ? (
+                      <span className="rounded border border-emerald-500/50 bg-emerald-100/70 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">
+                        预测信息选中
+                      </span>
+                    ) : null}
+                    {(() => {
+                      const orig = parseOriginalTopName(pick);
+                      return orig && orig !== pick.selected_player.prospect.name ? (
+                        <span className="rounded border border-amber-500/50 bg-amber-100/70 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
+                          存在评分分歧
+                        </span>
+                      ) : null;
+                    })()}
+                    {(() => {
+                      const action = (pick.trade_evaluation.action ?? "").toLowerCase();
+                      const pct = Math.round(pick.trade_evaluation.probability * 100);
+                      if (action === "keep_pick" || pct === 0) return null;
+                      return (
+                        <span className="rounded border border-sky-500/50 bg-sky-100/70 px-1.5 py-0.5 text-[10px] font-bold text-sky-800">
+                          交易建议 {pct}%
+                        </span>
+                      );
+                    })()}
                   </summary>
-                  <div className="mt-3 grid gap-3 text-sm leading-6 text-court-muted">
-                    <p>{formatDiagnosticText(pick.trade_evaluation.rationale)}</p>
-                    <ul className="grid gap-2">
-                      {pick.decision_log.map((line) => {
-                        // Phase 6A-B: a "Market context:" line is a
-                        // *read-only* observation, not a GM decision
-                        // input.  Visually separate it so the reader
-                        // doesn't mistake cached news for a ranking
-                        // / trade nudge.  Detection is purely on the
-                        // "Market context:" prefix written by
-                        // simulation_service._format_market_line().
-                        const isMarketContext = line.startsWith(
-                          "Market context:",
-                        );
-                        const isScoutingTiebreaker = line.startsWith(
-                          "Scouting fit tie-breaker applied:",
-                        );
-                        if (isMarketContext) {
-                          return (
-                            <li
-                              key={line}
-                              className="flex items-start gap-2 border-l-2 border-amber-300/40 bg-amber-300/[0.05] py-1 pl-3 pr-2"
-                            >
-                              <span className="mt-0.5 inline-block shrink-0 rounded border border-amber-300/40 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-bold text-amber-200">
-                                只读选秀行情
-                              </span>
-                              <span className="text-court-muted/90">
-                                {formatDecisionLogLine(line)}
-                              </span>
-                            </li>
-                          );
-                        }
-                        if (isScoutingTiebreaker) {
-                          return (
-                            <li
-                              key={line}
-                              className="flex items-start gap-2 border-l-2 border-court-line/50 bg-court-line/[0.06] py-1 pl-3 pr-2"
-                            >
-                              <span className="mt-0.5 inline-block shrink-0 rounded border border-court-line/40 bg-court-line/10 px-1.5 py-0.5 text-[10px] font-bold text-court-line">
-                                同档适配
-                              </span>
-                              <span className="text-court-muted/90">
-                                {formatDecisionLogLine(line)}
-                              </span>
-                            </li>
-                          );
-                        }
-                        return <li key={line}>{formatDecisionLogLine(line)}</li>;
-                      })}
-                    </ul>
-                    <CandidateBoardPreview candidates={pick.candidate_board} />
-                  </div>
+                  <PickExplanationSummary pick={pick} simulation={simulation} />
+                  <details className="mt-3 rounded-md border border-court-border bg-court-faint px-3 py-2">
+                    <summary className="cursor-pointer text-xs font-black uppercase tracking-[0.12em] text-court-text">
+                      技术日志 / 原始决策流程 · {formatTradeAction(pick.trade_evaluation.action)} ·{" "}
+                      {Math.round(pick.trade_evaluation.probability * 100)}%
+                    </summary>
+                    <p className="mt-2 text-[11px] leading-5 text-court-muted">
+                      以下内容是系统内部决策日志，主要用于调试和复核；不会改变已经锁定的选择。
+                    </p>
+
+                    {/* M4-CQ-B: Chinese decision-flow summary first, so the
+                        expanded panel leads with readable Chinese steps
+                        instead of raw English. */}
+                    <div className="mt-3 rounded-md border border-court-border bg-court-panel px-3 py-2.5">
+                      <p className="text-xs font-black tracking-[0.12em] text-court-text">
+                        中文决策流程
+                      </p>
+                      <ol className="mt-2 grid gap-1.5 text-xs leading-6 text-court-text/85">
+                        {buildDecisionFlowZh(pick, simulation).map((step, idx) => (
+                          <li className="flex items-start gap-2" key={`flow-${idx}`}>
+                            <span className="mt-0.5 shrink-0 font-black text-court-line">
+                              {idx + 1}.
+                            </span>
+                            <span className="min-w-0">{step}</span>
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+
+                    {/* Candidate board preview stays available — it is
+                        structured data, not raw English prose. */}
+                    <div className="mt-3 grid gap-3 text-sm leading-6 text-court-muted">
+                      <CandidateBoardPreview candidates={pick.candidate_board} />
+                    </div>
+
+                    {/* M4-CQ-B: English raw trace moved into a nested
+                        second-level collapse so it is preserved but no
+                        longer the first thing users see when they expand
+                        the tech log. */}
+                    <details className="mt-3 rounded-md border border-court-border bg-court-panel px-3 py-2">
+                      <summary className="cursor-pointer text-[11px] font-black uppercase tracking-[0.12em] text-court-muted">
+                        查看英文原始日志
+                      </summary>
+                      <div className="mt-3 grid gap-3 text-sm leading-6 text-court-muted">
+                        <p>{formatDiagnosticText(pick.trade_evaluation.rationale)}</p>
+                        <ul className="grid gap-2">
+                          {pick.decision_log.map((line) => {
+                            // Phase 6A-B: a "Market context:" line is a
+                            // *read-only* observation, not a GM decision
+                            // input.  Visually separate it so the reader
+                            // doesn't mistake cached news for a ranking
+                            // / trade nudge.  Detection is purely on the
+                            // "Market context:" prefix written by
+                            // simulation_service._format_market_line().
+                            const isMarketContext = line.startsWith(
+                              "Market context:",
+                            );
+                            const isScoutingTiebreaker = line.startsWith(
+                              "Scouting fit tie-breaker applied:",
+                            );
+                            if (isMarketContext) {
+                              return (
+                                <li
+                                  key={line}
+                                  className="flex items-start gap-2 border-l-2 border-amber-300/40 bg-amber-300/[0.05] py-1 pl-3 pr-2"
+                                >
+                                  <span className="mt-0.5 inline-block shrink-0 rounded border border-amber-300/40 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-bold text-amber-200">
+                                    只读选秀行情
+                                  </span>
+                                  <span className="text-court-muted/90">
+                                    {formatDecisionLogLine(line)}
+                                  </span>
+                                </li>
+                              );
+                            }
+                            if (isScoutingTiebreaker) {
+                              return (
+                                <li
+                                  key={line}
+                                  className="flex items-start gap-2 border-l-2 border-court-line/50 bg-court-line/[0.06] py-1 pl-3 pr-2"
+                                >
+                                  <span className="mt-0.5 inline-block shrink-0 rounded border border-court-line/40 bg-court-line/10 px-1.5 py-0.5 text-[10px] font-bold text-court-line">
+                                    同档适配
+                                  </span>
+                                  <span className="text-court-muted/90">
+                                    {formatDecisionLogLine(line)}
+                                  </span>
+                                </li>
+                              );
+                            }
+                            return <li key={line}>{formatDecisionLogLine(line)}</li>;
+                          })}
+                        </ul>
+                      </div>
+                    </details>
+                  </details>
                 </details>
                 <EvidencePanel pick={pick} simulation={simulation} />
               </article>
