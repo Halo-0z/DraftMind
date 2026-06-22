@@ -2116,6 +2116,64 @@ class TestDiagnosticsWarnings:
         warnings = response.json()["market_top30_missing_warnings"]
         assert any("Missing Market Top Thirty expected #12" in w for w in warnings)
 
+    def test_market_top30_missing_warning_skips_withdrawn_prospects(
+        self,
+        client: TestClient,
+        db_session: Session,
+    ) -> None:
+        withdrawn = self._add_mock_prospect(
+            db_session,
+            name="Tounde Yessoufou",
+            upside_score=10.0,
+        )
+        active = self._add_mock_prospect(
+            db_session,
+            name="Active Market Top Thirty",
+            upside_score=9.0,
+        )
+        db_session.add_all([
+            ProspectDraftProjection(
+                prospect_id=withdrawn.id,
+                year=2026,
+                expected_pick=9,
+                draft_range_min=8,
+                draft_range_max=12,
+                tier=3,
+                source="consensus_reference",
+                confidence=0.80,
+                notes="Withdrawn prospect must not surface in warning panels.",
+            ),
+            ProspectDraftProjection(
+                prospect_id=active.id,
+                year=2026,
+                expected_pick=12,
+                draft_range_min=10,
+                draft_range_max=14,
+                tier=3,
+                source="consensus_reference",
+                confidence=0.80,
+                notes="Active missing top-30 fixture.",
+            ),
+        ])
+        db_session.commit()
+
+        response = client.post(
+            "/api/simulate",
+            json={
+                "year": 2026,
+                "rounds": 1,
+                "limit": 2,
+                "include_projection_diagnostics": True,
+                "include_prediction_shadow": True,
+                "use_prediction_calibration": True,
+            },
+        )
+
+        assert response.status_code == 200
+        warnings = response.json()["market_top30_missing_warnings"]
+        assert not any("Tounde Yessoufou expected #9" in w for w in warnings)
+        assert any("Active Market Top Thirty expected #12" in w for w in warnings)
+
     def test_diagnostic_warnings_do_not_change_selection_or_scores(
         self,
         client: TestClient,

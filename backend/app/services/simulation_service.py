@@ -27,7 +27,10 @@ from app.services.prediction_calibration import (
     calculate_prediction_sort_score,
     has_same_team_projection_priority,
 )
-from app.services.prospect_availability import filter_available_prospects
+from app.services.prospect_availability import (
+    filter_available_prospects,
+    is_officially_unavailable_for_draft,
+)
 from app.services.team_need_adjustment import (
     TeamNeedSnapshot,
     adjust_team_need_after_pick,
@@ -357,6 +360,8 @@ def _market_top30_missing_warnings(
             continue
         prospect = db.get(Prospect, projection.prospect_id)
         if prospect is None:
+            continue
+        if is_officially_unavailable_for_draft(prospect.name, draft_year=year):
             continue
         warnings.append(
             "Market top-30 missing warning: "
