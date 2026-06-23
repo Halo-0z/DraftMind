@@ -2,11 +2,18 @@
 
 > NBA draft decision agent — simulate a general manager's draft board with a deterministic, explainable scoring engine.
 
+DraftMind is an explainable NBA Draft prediction simulator with a frozen 60-pick pre-draft board for the 2026 NBA Draft. It combines a deterministic scoring pipeline with structured market projection data in **Draft-Day Accuracy Mode**, while keeping LLM and News/RAG inputs strictly outside the player-selection path.
+
+- **Final release tag**: `final-corrected-pre-draft-board-2026`
+- **Final result document**: [docs/final-project-result-2026.md](docs/final-project-result-2026.md)
+- **Core guarantee**: LLM explains results; it does not pick players.
+- **News/RAG boundary**: read-only context for evidence and explanation, not a direct `selected_player` signal.
+
 DraftMind 不会让 LLM 替你做选秀决定。先用 `ranking_engine` 把候选新秀按 **talent / fit / pick value / risk** 打分并排序；只有排序结果出来之后，LLM 才把结构化结果翻译成 GM 视角的叙事。
 
 ```text
 status : v4 stable (news-aware)
-license: MIT planned
+license: MIT
 stack : FastAPI + Next.js + SQLite
 LLM   : mock-first, hunyuan (腾讯混元) optional
 tags  : simulate-v1-dynamic-needs · simulate-v2-locked-picks
